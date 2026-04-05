@@ -10,6 +10,7 @@ import argparse
 import os
 import threading
 import traceback
+import requests
 from datetime import datetime, timezone
 
 # Force UTF-8 sur stdout/stderr (Windows cp1252 ne supporte pas les box-drawing chars)
@@ -55,7 +56,8 @@ BOT_CONFIG = {
     "min_score":          4.0,
 }
 
-PERF_FILE = os.path.join(os.path.dirname(__file__), "performance.json")
+PERF_FILE  = os.path.join(os.path.dirname(__file__), "performance.json")
+_PERF_LOCK = threading.Lock()   # protège perf dict + écriture fichier
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -184,10 +186,11 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
 
     # Écriture atomique : écrit dans un fichier temporaire puis renomme
     # pour éviter la corruption en cas d'exécutions concurrentes
-    tmp = PERF_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, PERF_FILE)
+    with _PERF_LOCK:
+        tmp = PERF_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, PERF_FILE)
 
     print(f"  >> performance.json mis a jour (cycle #{cycle}, net_worth=${portfolio.net_worth():.2f})")
 
@@ -226,6 +229,99 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
         restored += 1
 
     print(f"  >> Portfolio restaure : {restored} position(s), cash=${saved_cash:.2f}")
+
+
+def refresh_position_prices(trader: "CopyTrader", perf: dict,
+                            stop_event: threading.Event,
+                            interval: int = 300) -> None:
+    """Thread : rafraîchit les prix courants des positions toutes les 5 min
+    depuis l'API CLOB Polymarket et recalcule le PnL latent réel dans performance.json."""
+    CLOB_API = "https://clob.polymarket.com"
+
+    while not stop_event.is_set():
+        # Attendre l'intervalle (interruptible par stop_event)
+        stop_event.wait(timeout=interval)
+        if stop_event.is_set():
+            break
+
+        try:
+            # Copie thread-safe des token_ids courants
+            with _PERF_LOCK:
+                token_ids = list(trader.portfolio.positions.keys())
+
+            if not token_ids:
+                continue
+
+            # Récupération des prix hors verrou (appels réseau)
+            current_prices: dict = {}
+            for tid in token_ids:
+                try:
+                    r = requests.get(
+                        f"{CLOB_API}/midpoint",
+                        params={"token_id": tid},
+                        timeout=5,
+                    )
+                    if r.status_code == 200:
+                        mid = r.json().get("mid")
+                        if mid is not None:
+                            current_prices[tid] = float(mid)
+                except Exception:
+                    pass
+
+            if not current_prices:
+                print("  [price_refresh] Aucun prix reçu depuis l'API CLOB")
+                continue
+
+            now = datetime.now(timezone.utc).isoformat()
+            total_cost  = 0.0
+            total_value = 0.0
+
+            with _PERF_LOCK:
+                if perf.get("cycles"):
+                    last_cycle = perf["cycles"][-1]
+                    updated_positions = []
+                    for p in last_cycle.get("open_positions", []):
+                        tid       = p.get("token_id", "")
+                        avg_cost  = p.get("avg_cost", 0.0)
+                        # Utilise le prix précédent si l'API n'a pas répondu pour ce token
+                        cur_price = current_prices.get(
+                            tid, p.get("current_price", avg_cost)
+                        )
+                        shares    = p.get("shares", 0.0)
+                        cost      = p.get("total_cost", 0.0)
+                        cur_value = shares * cur_price
+                        unr_pnl   = cur_value - cost
+                        pnl_pct   = unr_pnl / cost * 100 if cost > 0 else 0.0
+
+                        entry = dict(p)
+                        entry["current_price"]  = round(cur_price,  4)
+                        entry["current_value"]  = round(cur_value,  4)
+                        entry["unrealized_pnl"] = round(unr_pnl,    4)
+                        entry["pnl_pct"]        = round(pnl_pct,    2)
+                        updated_positions.append(entry)
+                        total_cost  += cost
+                        total_value += cur_value
+
+                    last_cycle["open_positions"]    = updated_positions
+                    last_cycle["prices_updated_at"] = now
+
+                unrealized_total = total_value - total_cost
+                perf["summary"]["unrealized_pnl"]    = round(unrealized_total, 4)
+                perf["summary"]["prices_updated_at"] = now
+
+                # Sauvegarde atomique
+                tmp = PERF_FILE + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(perf, f, indent=2, ensure_ascii=False)
+                os.replace(tmp, PERF_FILE)
+
+            print(
+                f"  >> [price_refresh] {len(current_prices)}/{len(token_ids)} prix mis a jour "
+                f"| PnL latent total : ${unrealized_total:+.2f}"
+            )
+
+        except Exception as e:
+            print(f"  [price_refresh] Erreur : {e}")
 
 
 def banner(dry_run: bool) -> None:
@@ -363,6 +459,16 @@ def main() -> None:
 
     stop_event = threading.Event()
     started_at = datetime.now(timezone.utc)
+
+    # Thread de rafraîchissement des prix (toutes les 5 min)
+    price_thread = threading.Thread(
+        target=refresh_position_prices,
+        args=(trader, perf, stop_event, 300),
+        daemon=True,
+        name="price-refresher",
+    )
+    price_thread.start()
+
     tg_handler = TelegramCommandHandler(trader, stop_event, started_at)
     tg_handler.start()
     notify_start(dry_run, len(WALLETS_TO_TRACK))

@@ -173,12 +173,13 @@
     <div class="card-title">
       Positions ouvertes
       <span id="pos-total" style="color:var(--blue);font-size:12px;font-weight:600"></span>
+      <span id="pos-prices-updated" style="color:var(--muted);font-size:10px;font-weight:400;margin-left:8px"></span>
     </div>
     <div class="tbl-wrap lg">
       <table>
         <thead><tr>
           <th>Outcome</th><th>Shares</th><th>Prix moy.</th><th>Coût</th>
-          <th>Val. max</th><th>Gain pot.</th><th>Market ID</th>
+          <th>Prix actuel</th><th>PnL latent</th><th>Market ID</th>
         </tr></thead>
         <tbody id="pos-tbody"></tbody>
       </table>
@@ -401,25 +402,49 @@ function renderWalletsTable(cycles, wallets) {
 
 // ── All positions (toutes, pas de limite) ─────────────────────────────────────
 function renderPositions(cycles) {
-  const last = cycles[cycles.length-1]||{};
-  const pos  = (last.open_positions||[]).slice();
-  pos.sort((a,b)=>(b.shares-b.total_cost)-(a.shares-a.total_cost));
+  const last      = cycles[cycles.length-1]||{};
+  const pos       = (last.open_positions||[]).slice();
+  const pricesAt  = last.prices_updated_at;
+
+  // Tri par PnL latent réel (champ du JSON) ou estimé si pas encore rafraîchi
+  pos.sort((a,b)=>{
+    const aPnl = a.unrealized_pnl ?? (a.shares * (a.current_price??a.avg_cost) - a.total_cost);
+    const bPnl = b.unrealized_pnl ?? (b.shares * (b.current_price??b.avg_cost) - b.total_cost);
+    return bPnl - aPnl;
+  });
+
   document.getElementById('pos-total').textContent = `${pos.length} / 60 positions`;
+
+  // Indicateur de fraîcheur des prix
+  const pricesLbl = document.getElementById('pos-prices-updated');
+  if (pricesLbl) {
+    pricesLbl.textContent = pricesAt
+      ? `· prix CLOB : ${new Date(pricesAt).toLocaleTimeString('fr-FR')}`
+      : '· prix non encore rafraîchis (attente 5 min)';
+  }
+
   const tbody = document.getElementById('pos-tbody');
   if (!pos.length) { tbody.innerHTML=`<tr><td colspan="7" class="empty">Aucune position ouverte</td></tr>`; return; }
   tbody.innerHTML = pos.map(p => {
-    const maxVal  = p.shares * 1.0;
-    const potGain = maxVal - p.total_cost;
-    const potPct  = p.total_cost>0 ? potGain/p.total_cost*100 : 0;
-    const gainCls = potGain>0 ? 'positive' : 'negative';
-    const mid     = p.market_id ? `<span class="mono" style="font-size:10px;color:var(--muted)">${short(p.market_id)}</span>` : '—';
+    // Utilise current_price injecté par le price-refresher, sinon fallback avg_cost
+    const curPrice  = p.current_price ?? null;
+    const pnl       = p.unrealized_pnl ?? (curPrice != null ? p.shares * curPrice - p.total_cost : null);
+    const pnlPct    = p.pnl_pct        ?? (pnl != null && p.total_cost > 0 ? pnl/p.total_cost*100 : null);
+    const gainCls   = pnl == null ? 'neutral' : pnl >= 0 ? 'positive' : 'negative';
+    const priceCell = curPrice != null
+      ? `<span class="mono">$${Number(curPrice).toFixed(3)}</span>`
+      : `<span style="color:var(--muted);font-size:10px">en attente…</span>`;
+    const pnlCell   = pnl != null
+      ? `${pnl>=0?'+':''}${fmt$(pnl)} <span style="color:var(--muted);font-size:10px">(${pnlPct>=0?'+':''}${pnlPct.toFixed(1)}%)</span>`
+      : `<span style="color:var(--muted);font-size:10px">—</span>`;
+    const mid = p.market_id ? `<span class="mono" style="font-size:10px;color:var(--muted)">${short(p.market_id)}</span>` : '—';
     return `<tr>
       <td><span class="${outcomeClass(p.outcome)}">${p.outcome}</span></td>
       <td class="mono">${Number(p.shares).toFixed(2)}</td>
       <td class="mono">$${Number(p.avg_cost).toFixed(3)}</td>
       <td class="mono">${fmt$(p.total_cost)}</td>
-      <td class="mono">$${maxVal.toFixed(2)}</td>
-      <td class="mono ${gainCls}">${potGain>=0?'+':''}${fmt$(potGain)} <span style="color:var(--muted);font-size:10px">(${potPct>=0?'+':''}${potPct.toFixed(0)}%)</span></td>
+      <td>${priceCell}</td>
+      <td class="mono ${gainCls}">${pnlCell}</td>
       <td>${mid}</td>
     </tr>`;
   }).join('');
