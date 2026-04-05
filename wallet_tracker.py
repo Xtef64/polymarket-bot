@@ -43,9 +43,8 @@ def get_trade_history(wallet: str, limit: int = 50) -> list[dict]:
         return []
 
 
-def get_pnl(wallet: str) -> dict:
-    """Retourne le PnL approximatif à partir des positions ouvertes."""
-    positions = get_positions(wallet)
+def compute_pnl(positions: list[dict]) -> dict:
+    """Calcule le PnL à partir d'une liste de positions déjà chargées."""
     if not positions:
         return {}
     total_value = sum(float(p.get("currentValue", 0) or 0) for p in positions)
@@ -68,7 +67,7 @@ class WalletTracker:
         for wallet in self.wallets:
             positions = get_positions(wallet)
             trades    = get_trade_history(wallet, limit=20)
-            pnl       = get_pnl(wallet)
+            pnl       = compute_pnl(positions)   # réutilise positions déjà chargées
             data[wallet] = {
                 "positions": positions,
                 "recent_trades": trades,

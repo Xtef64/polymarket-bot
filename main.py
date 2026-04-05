@@ -9,12 +9,14 @@ import json
 import argparse
 import os
 import threading
+import traceback
 from datetime import datetime, timezone
 
 # Force UTF-8 sur stdout/stderr (Windows cp1252 ne supporte pas les box-drawing chars)
-if hasattr(sys.stdout, "reconfigure"):
+# Actif seulement sur Windows ; sur Linux (Railway), stdout est déjà UTF-8
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
+if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from wallet_tracker     import WalletTracker
@@ -372,6 +374,7 @@ def main() -> None:
                 run_cycle(tracker, analyzer, trader, cycle, perf, tg_handler)
             except Exception as e:
                 print(f"  [ERREUR cycle #{cycle}] {e}")
+                traceback.print_exc()
 
             if args.cycles and cycle >= args.cycles:
                 print(f"\nNombre de cycles atteint ({args.cycles}). Arret.")
