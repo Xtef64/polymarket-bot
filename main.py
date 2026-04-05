@@ -20,6 +20,7 @@ if hasattr(sys.stderr, "reconfigure"):
 from wallet_tracker     import WalletTracker
 from market_analyzer    import MarketAnalyzer
 from copytrader         import CopyTrader
+from serve              import start_server_thread
 from telegram_notifier  import (
     TelegramCommandHandler, notify_start, notify_stop,
     notify_trade, notify_cycle, _send as tg_send,
@@ -350,6 +351,12 @@ def main() -> None:
 
     # Restaure les positions depuis le dernier cycle sauvegardé
     _restore_portfolio(trader, perf)
+
+    # Démarre le serveur dashboard en arrière-plan
+    dashboard_port = int(os.environ.get("PORT", 8765))
+    start_server_thread(dashboard_port)
+    public_url = os.environ.get("PUBLIC_URL", f"http://localhost:{dashboard_port}")
+    print(f"  >> Dashboard : {public_url}/dashboard.html")
 
     stop_event = threading.Event()
     started_at = datetime.now(timezone.utc)

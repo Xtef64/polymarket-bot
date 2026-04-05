@@ -5,3 +5,6 @@ builder = "nixpacks"
 startCommand = "python main.py"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
+
+[[services]]
+name = "polymarket-bot"
