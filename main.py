@@ -32,17 +32,23 @@ from telegram_notifier  import (
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 WALLETS_TO_TRACK = [
-    # ── Top traders Polymarket leaderboard — PnL positif 30j (source: polymarket.com/leaderboard)
-    "0x492442eab586f242b53bda933fd5de859c8a3782",  # anonyme              | PnL30j=+$5 920 735  [#1]
+    # ── Top traders Polymarket leaderboard — PnL réalisé POSITIF 30j vérifié
+    # Source : polymarket.com/leaderboard — tous > +$500 000 sur 30 jours
+    "0xdc876e6873772d38716fda7f2452a78d426d7ab6",  # anon-dc87            | PnL30j=+$1 495 977  [#11]
+    "0xf195721ad850377c96cd634457c70cd9e8308057",  # anon-f195            | PnL30j=+$1 459 819  [#12]
+    "0x93abbc022ce98d6f45d4444b594791cc4b7a9723",  # anon-93ab            | PnL30j=+$1 295 513  [#13]
+    "0x59a0744db1f39ff3afccd175f80e6e8dfc239a09",  # anon-59a0            | PnL30j=+$1 202 926  [#14]
+    "0x8f037a2e4fd49d11267f4ab874ab7ba745ac64d6",  # anon-8f03            | PnL30j=+$1 185 569  [#15]
+    "0x50b1db131a24a9d9450bbd0372a95d32ea88f076",  # anon-50b1            | PnL30j=+$1 126 032  [#16]
+    "0x204f72f35326db932158cba6adff0b9a1da95e14",  # swisstony            | PnL30j=+$1 089 278  [#17]
+    "0x8c80d213c0cbad777d06ee3f58f6ca4bc03102c3",  # anon-8c80            | PnL30j=+$  951 431  [#18]
+    "0xb6d6e99d3bfe055874a04279f659f009fd57be17",  # anon-b6d6            | PnL30j=+$  887 474  [#19]
+    "0x07921379f7b31ef93da634b688b2fe36897db778",  # anon-0792            | PnL30j=+$  879 527  [#20]
+    "0x492442eab586f242b53bda933fd5de859c8a3782",  # anon-top1            | PnL30j=+$5 920 735  [#1]
     "0x02227b8f5a9636e895607edd3185ed6ee5598ff7",  # HorizonSplendidView  | PnL30j=+$4 016 108  [#2]
     "0xefbc5fec8d7b0acdc8911bdd9a98d6964308f9a2",  # reachingthesky       | PnL30j=+$3 742 635  [#3]
     "0xc2e7800b5af46e6093872b177b7a5e7f0563be51",  # beachboy4            | PnL30j=+$3 179 491  [#4]
-    "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1",  # anonyme              | PnL30j=+$2 572 124  [#5]
-    "0x019782cab5d844f02bafb71f512758be78579f3c",  # majorexploiter       | PnL30j=+$2 416 975  [#6]
     "0xbddf61af533ff524d27154e589d2d7a81510c684",  # Countryside          | PnL30j=+$2 203 283  [#7]
-    "0xb45a797faa52b0fd8adc56d30382022b7b12192c",  # bcda                 | PnL30j=+$1 780 507  [#8]
-    "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",  # RN1                  | PnL30j=+$1 746 768  [#9]
-    "0xee613b3fc183ee44f9da9c05f53e2da107e3debf",  # sovereign2013        | PnL30j=+$1 728 688  [#10]
 ]
 
 BOT_CONFIG = {
@@ -238,90 +244,88 @@ def refresh_position_prices(trader: "CopyTrader", perf: dict,
     depuis l'API CLOB Polymarket et recalcule le PnL latent réel dans performance.json."""
     CLOB_API = "https://clob.polymarket.com"
 
-    while not stop_event.is_set():
-        # Attendre l'intervalle (interruptible par stop_event)
-        stop_event.wait(timeout=interval)
-        if stop_event.is_set():
-            break
+    # Attendre que le premier cycle ait sauvegardé des positions (~90s)
+    stop_event.wait(timeout=90)
 
+    while not stop_event.is_set():
         try:
             # Copie thread-safe des token_ids courants
             with _PERF_LOCK:
                 token_ids = list(trader.portfolio.positions.keys())
 
-            if not token_ids:
-                continue
-
-            # Récupération des prix hors verrou (appels réseau)
-            current_prices: dict = {}
-            for tid in token_ids:
-                try:
-                    r = requests.get(
-                        f"{CLOB_API}/midpoint",
-                        params={"token_id": tid},
-                        timeout=5,
-                    )
-                    if r.status_code == 200:
-                        mid = r.json().get("mid")
-                        if mid is not None:
-                            current_prices[tid] = float(mid)
-                except Exception:
-                    pass
-
-            if not current_prices:
-                print("  [price_refresh] Aucun prix reçu depuis l'API CLOB")
-                continue
-
-            now = datetime.now(timezone.utc).isoformat()
-            total_cost  = 0.0
-            total_value = 0.0
-
-            with _PERF_LOCK:
-                if perf.get("cycles"):
-                    last_cycle = perf["cycles"][-1]
-                    updated_positions = []
-                    for p in last_cycle.get("open_positions", []):
-                        tid       = p.get("token_id", "")
-                        avg_cost  = p.get("avg_cost", 0.0)
-                        # Utilise le prix précédent si l'API n'a pas répondu pour ce token
-                        cur_price = current_prices.get(
-                            tid, p.get("current_price", avg_cost)
+            if token_ids:
+                # Récupération des prix hors verrou (appels réseau)
+                current_prices: dict = {}
+                for tid in token_ids:
+                    try:
+                        r = requests.get(
+                            f"{CLOB_API}/midpoint",
+                            params={"token_id": tid},
+                            timeout=5,
                         )
-                        shares    = p.get("shares", 0.0)
-                        cost      = p.get("total_cost", 0.0)
-                        cur_value = shares * cur_price
-                        unr_pnl   = cur_value - cost
-                        pnl_pct   = unr_pnl / cost * 100 if cost > 0 else 0.0
+                        if r.status_code == 200:
+                            mid = r.json().get("mid")
+                            if mid is not None:
+                                current_prices[tid] = float(mid)
+                    except Exception:
+                        pass
 
-                        entry = dict(p)
-                        entry["current_price"]  = round(cur_price,  4)
-                        entry["current_value"]  = round(cur_value,  4)
-                        entry["unrealized_pnl"] = round(unr_pnl,    4)
-                        entry["pnl_pct"]        = round(pnl_pct,    2)
-                        updated_positions.append(entry)
-                        total_cost  += cost
-                        total_value += cur_value
+                if current_prices:
+                    now = datetime.now(timezone.utc).isoformat()
+                    total_cost  = 0.0
+                    total_value = 0.0
 
-                    last_cycle["open_positions"]    = updated_positions
-                    last_cycle["prices_updated_at"] = now
+                    with _PERF_LOCK:
+                        if perf.get("cycles"):
+                            last_cycle = perf["cycles"][-1]
+                            updated_positions = []
+                            for p in last_cycle.get("open_positions", []):
+                                tid       = p.get("token_id", "")
+                                avg_cost  = p.get("avg_cost", 0.0)
+                                # Utilise le prix précédent si l'API n'a pas répondu pour ce token
+                                cur_price = current_prices.get(
+                                    tid, p.get("current_price", avg_cost)
+                                )
+                                shares    = p.get("shares", 0.0)
+                                cost      = p.get("total_cost", 0.0)
+                                cur_value = shares * cur_price
+                                unr_pnl   = cur_value - cost
+                                pnl_pct   = unr_pnl / cost * 100 if cost > 0 else 0.0
 
-                unrealized_total = total_value - total_cost
-                perf["summary"]["unrealized_pnl"]    = round(unrealized_total, 4)
-                perf["summary"]["prices_updated_at"] = now
+                                entry = dict(p)
+                                entry["current_price"]  = round(cur_price,  4)
+                                entry["current_value"]  = round(cur_value,  4)
+                                entry["unrealized_pnl"] = round(unr_pnl,    4)
+                                entry["pnl_pct"]        = round(pnl_pct,    2)
+                                updated_positions.append(entry)
+                                total_cost  += cost
+                                total_value += cur_value
 
-                # Sauvegarde atomique
-                tmp = PERF_FILE + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(perf, f, indent=2, ensure_ascii=False)
-                os.replace(tmp, PERF_FILE)
+                            last_cycle["open_positions"]    = updated_positions
+                            last_cycle["prices_updated_at"] = now
 
-            print(
-                f"  >> [price_refresh] {len(current_prices)}/{len(token_ids)} prix mis a jour "
-                f"| PnL latent total : ${unrealized_total:+.2f}"
-            )
+                        unrealized_total = total_value - total_cost
+                        perf["summary"]["unrealized_pnl"]    = round(unrealized_total, 4)
+                        perf["summary"]["prices_updated_at"] = now
+
+                        # Sauvegarde atomique
+                        tmp = PERF_FILE + ".tmp"
+                        with open(tmp, "w", encoding="utf-8") as f:
+                            json.dump(perf, f, indent=2, ensure_ascii=False)
+                        os.replace(tmp, PERF_FILE)
+
+                    print(
+                        f"  >> [price_refresh] {len(current_prices)}/{len(token_ids)} prix mis a jour "
+                        f"| PnL latent total : ${unrealized_total:+.2f}"
+                    )
+                else:
+                    print("  [price_refresh] Aucun prix reçu depuis l'API CLOB")
 
         except Exception as e:
             print(f"  [price_refresh] Erreur : {e}")
+
+        # Attendre avant le prochain refresh (interruptible)
+        stop_event.wait(timeout=interval)
 
 
 def banner(dry_run: bool) -> None:

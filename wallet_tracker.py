@@ -44,14 +44,21 @@ def get_trade_history(wallet: str, limit: int = 50) -> list[dict]:
 
 
 def compute_pnl(positions: list[dict]) -> dict:
-    """Calcule le PnL à partir d'une liste de positions déjà chargées."""
+    """Calcule le PnL réalisé à partir d'une liste de positions.
+
+    Utilise le champ 'realizedPnl' de l'API (gains déjà encaissés sur positions
+    fermées ou partiellement fermées) pour éviter d'afficher uniquement les
+    pertes latentes sur positions ouvertes, qui biaisait le PnL en négatif.
+    """
     if not positions:
         return {}
+    realized    = sum(float(p.get("realizedPnl",  0) or 0) for p in positions)
+    unrealized  = sum(float(p.get("cashPnl",      0) or 0) for p in positions)
     total_value = sum(float(p.get("currentValue", 0) or 0) for p in positions)
-    total_cost  = sum(float(p.get("initialValue", 0) or p.get("curValue", 0) or 0) for p in positions)
     return {
-        "profit": round(total_value - total_cost, 2),
-        "volume": round(total_value, 2),
+        "profit":     round(realized,   2),   # PnL réalisé (gains encaissés)
+        "unrealized": round(unrealized, 2),   # PnL latent positions ouvertes
+        "volume":     round(total_value, 2),
     }
 
 
