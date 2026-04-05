@@ -63,8 +63,9 @@ BOT_CONFIG = {
     "min_score":          4.0,
 }
 
-PERF_FILE  = os.path.join(os.path.dirname(__file__), "performance.json")
-_PERF_LOCK = threading.Lock()   # protège perf dict + écriture fichier
+PERF_FILE    = os.path.join(os.path.dirname(__file__), "performance.json")
+_PERF_LOCK   = threading.Lock()   # protège perf dict + écriture fichier
+_price_cache: dict = {}           # token_id → prix courant (mis à jour par le refresher)
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -119,19 +120,28 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         for m in top_markets[:10]
     ]
 
-    # Positions ouvertes (avec market_id et opened_at pour auto-close)
-    open_pos = [
-        {
-            "token_id":   tid,
-            "market_id":  p.get("market_id", ""),
-            "outcome":    p["outcome"],
-            "shares":     p["shares"],
-            "avg_cost":   p["avg_cost"],
-            "total_cost": p["total_cost"],
-            "opened_at":  p.get("opened_at", ""),
-        }
-        for tid, p in portfolio.positions.items()
-    ]
+    # Positions ouvertes — inclut le prix courant depuis _price_cache si disponible
+    open_pos = []
+    for tid, p in portfolio.positions.items():
+        cost      = p["total_cost"]
+        shares    = p["shares"]
+        cur_price = _price_cache.get(tid)          # None si pas encore rafraîchi
+        cur_value = round(shares * cur_price, 4)   if cur_price is not None else None
+        unr_pnl   = round(cur_value - cost, 4)     if cur_value is not None else None
+        pnl_pct   = round(unr_pnl / cost * 100, 2) if unr_pnl is not None and cost > 0 else None
+        open_pos.append({
+            "token_id":      tid,
+            "market_id":     p.get("market_id", ""),
+            "outcome":       p["outcome"],
+            "shares":        shares,
+            "avg_cost":      p["avg_cost"],
+            "total_cost":    cost,
+            "opened_at":     p.get("opened_at", ""),
+            "current_price": cur_price,
+            "current_value": cur_value,
+            "unrealized_pnl": unr_pnl,
+            "pnl_pct":       pnl_pct,
+        })
 
     # Derniers ordres exécutés
     last_orders = [
@@ -238,94 +248,104 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
     print(f"  >> Portfolio restaure : {restored} position(s), cash=${saved_cash:.2f}")
 
 
+def _do_price_refresh(trader: "CopyTrader", perf: dict) -> None:
+    """Récupère les prix CLOB, met à jour _price_cache et performance.json."""
+    global _price_cache
+    CLOB_API = "https://clob.polymarket.com"
+
+    # Snapshot thread-safe des token_ids en portefeuille
+    with _PERF_LOCK:
+        token_ids = [tid for tid in trader.portfolio.positions.keys() if tid]
+
+    if not token_ids:
+        print("  [price_refresh] Aucune position ouverte — rien à rafraîchir")
+        return
+
+    # Appels réseau hors verrou
+    fetched: dict = {}
+    for tid in token_ids:
+        try:
+            r = requests.get(
+                f"{CLOB_API}/midpoint",
+                params={"token_id": tid},
+                timeout=5,
+            )
+            if r.status_code == 200:
+                mid = r.json().get("mid")
+                if mid is not None:
+                    fetched[tid] = float(mid)
+        except Exception as exc:
+            print(f"  [price_refresh] Erreur midpoint {tid[:16]}... : {exc}")
+
+    if not fetched:
+        print(f"  [price_refresh] 0/{len(token_ids)} prix reçus — vérifiez les token IDs")
+        return
+
+    now          = datetime.now(timezone.utc).isoformat()
+    total_cost   = 0.0
+    total_value  = 0.0
+
+    with _PERF_LOCK:
+        # 1. Mettre à jour le cache (utilisé par save_perf pour les futurs cycles)
+        _price_cache.update(fetched)
+
+        # 2. Mettre à jour immédiatement le dernier cycle dans perf (dashboard temps réel)
+        if perf.get("cycles"):
+            last_cycle = perf["cycles"][-1]
+            updated = []
+            for p in last_cycle.get("open_positions", []):
+                tid      = p.get("token_id", "")
+                # Priorité : prix fraîchement reçu, sinon valeur précédente dans le cache
+                cur_price = fetched.get(tid) or _price_cache.get(tid)
+                if cur_price is None:
+                    cur_price = p.get("avg_cost", 0.0)
+                shares    = p.get("shares",     0.0)
+                cost      = p.get("total_cost", 0.0)
+                cur_value = shares * cur_price
+                unr_pnl   = cur_value - cost
+                pnl_pct   = unr_pnl / cost * 100 if cost > 0 else 0.0
+                entry = dict(p)
+                entry["current_price"]   = round(cur_price, 4)
+                entry["current_value"]   = round(cur_value, 4)
+                entry["unrealized_pnl"]  = round(unr_pnl,  4)
+                entry["pnl_pct"]         = round(pnl_pct,  2)
+                updated.append(entry)
+                total_cost  += cost
+                total_value += cur_value
+            last_cycle["open_positions"]    = updated
+            last_cycle["prices_updated_at"] = now
+
+        unrealized_total = total_value - total_cost
+        perf["summary"]["unrealized_pnl"]    = round(unrealized_total, 4)
+        perf["summary"]["prices_updated_at"] = now
+
+        # 3. Sauvegarde atomique
+        tmp = PERF_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(perf, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, PERF_FILE)
+
+    print(
+        f"  >> [price_refresh] {len(fetched)}/{len(token_ids)} prix mis a jour "
+        f"| PnL latent : ${unrealized_total:+.2f}"
+    )
+
+
 def refresh_position_prices(trader: "CopyTrader", perf: dict,
                             stop_event: threading.Event,
                             interval: int = 300) -> None:
-    """Thread : rafraîchit les prix courants des positions toutes les 5 min
-    depuis l'API CLOB Polymarket et recalcule le PnL latent réel dans performance.json."""
-    CLOB_API = "https://clob.polymarket.com"
+    """Thread daemon : rafraîchit les prix toutes les `interval` secondes.
+    Premier refresh dès que le 1er cycle a eu le temps de sauvegarder (~90s)."""
 
-    # Attendre que le premier cycle ait sauvegardé des positions (~90s)
+    # Attendre que le 1er cycle ait sauvegardé des positions
     stop_event.wait(timeout=90)
 
     while not stop_event.is_set():
         try:
-            # Copie thread-safe des token_ids courants
-            with _PERF_LOCK:
-                token_ids = list(trader.portfolio.positions.keys())
-
-            if token_ids:
-                # Récupération des prix hors verrou (appels réseau)
-                current_prices: dict = {}
-                for tid in token_ids:
-                    try:
-                        r = requests.get(
-                            f"{CLOB_API}/midpoint",
-                            params={"token_id": tid},
-                            timeout=5,
-                        )
-                        if r.status_code == 200:
-                            mid = r.json().get("mid")
-                            if mid is not None:
-                                current_prices[tid] = float(mid)
-                    except Exception:
-                        pass
-
-                if current_prices:
-                    now = datetime.now(timezone.utc).isoformat()
-                    total_cost  = 0.0
-                    total_value = 0.0
-
-                    with _PERF_LOCK:
-                        if perf.get("cycles"):
-                            last_cycle = perf["cycles"][-1]
-                            updated_positions = []
-                            for p in last_cycle.get("open_positions", []):
-                                tid       = p.get("token_id", "")
-                                avg_cost  = p.get("avg_cost", 0.0)
-                                # Utilise le prix précédent si l'API n'a pas répondu pour ce token
-                                cur_price = current_prices.get(
-                                    tid, p.get("current_price", avg_cost)
-                                )
-                                shares    = p.get("shares", 0.0)
-                                cost      = p.get("total_cost", 0.0)
-                                cur_value = shares * cur_price
-                                unr_pnl   = cur_value - cost
-                                pnl_pct   = unr_pnl / cost * 100 if cost > 0 else 0.0
-
-                                entry = dict(p)
-                                entry["current_price"]  = round(cur_price,  4)
-                                entry["current_value"]  = round(cur_value,  4)
-                                entry["unrealized_pnl"] = round(unr_pnl,    4)
-                                entry["pnl_pct"]        = round(pnl_pct,    2)
-                                updated_positions.append(entry)
-                                total_cost  += cost
-                                total_value += cur_value
-
-                            last_cycle["open_positions"]    = updated_positions
-                            last_cycle["prices_updated_at"] = now
-
-                        unrealized_total = total_value - total_cost
-                        perf["summary"]["unrealized_pnl"]    = round(unrealized_total, 4)
-                        perf["summary"]["prices_updated_at"] = now
-
-                        # Sauvegarde atomique
-                        tmp = PERF_FILE + ".tmp"
-                        with open(tmp, "w", encoding="utf-8") as f:
-                            json.dump(perf, f, indent=2, ensure_ascii=False)
-                        os.replace(tmp, PERF_FILE)
-
-                    print(
-                        f"  >> [price_refresh] {len(current_prices)}/{len(token_ids)} prix mis a jour "
-                        f"| PnL latent total : ${unrealized_total:+.2f}"
-                    )
-                else:
-                    print("  [price_refresh] Aucun prix reçu depuis l'API CLOB")
-
+            _do_price_refresh(trader, perf)
         except Exception as e:
-            print(f"  [price_refresh] Erreur : {e}")
-
-        # Attendre avant le prochain refresh (interruptible)
+            print(f"  [price_refresh] Erreur inattendue : {e}")
+        # Attendre avant le prochain refresh
         stop_event.wait(timeout=interval)
 
 
