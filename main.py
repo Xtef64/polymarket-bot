@@ -44,6 +44,7 @@ WALLETS_TO_TRACK = [
     "0x8c80d213c0cbad777d06ee3f58f6ca4bc03102c3",  # anon-8c80            | PnL30j=+$  951 431  [#18]
     "0xb6d6e99d3bfe055874a04279f659f009fd57be17",  # anon-b6d6            | PnL30j=+$  887 474  [#19]
     "0x07921379f7b31ef93da634b688b2fe36897db778",  # anon-0792            | PnL30j=+$  879 527  [#20]
+    "0xee613b3fc183ee44f9da9c05f53e2da107e3debf",  # sovereign2013        | PnL30j=+$1 728 688  [#10]
     "0x492442eab586f242b53bda933fd5de859c8a3782",  # anon-top1            | PnL30j=+$5 920 735  [#1]
     "0x02227b8f5a9636e895607edd3185ed6ee5598ff7",  # HorizonSplendidView  | PnL30j=+$4 016 108  [#2]
     "0xefbc5fec8d7b0acdc8911bdd9a98d6964308f9a2",  # reachingthesky       | PnL30j=+$3 742 635  [#3]
