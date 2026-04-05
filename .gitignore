@@ -1,0 +1,30 @@
+# ── Claude Code (interne) ────────────────────────────────
+.claude/
+
+# ── Secrets ───────────────────────────────────────────────
+.env
+*.env
+telegram.txt
+
+# ── Données runtime (ne pas versionner) ──────────────────
+performance.json
+performance.json.tmp
+bot.log
+bot_output.log
+nohup.out
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# ── OS ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
