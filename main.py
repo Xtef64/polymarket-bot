@@ -32,7 +32,9 @@ from telegram_notifier  import (
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 WALLETS_TO_TRACK = [
-    "0x751a2b86cab503496efd325c8344e10159349ea1",
+    "0xffba27b97f3a79298d1f731926d37ca75c76b782",
+    "0x022aacb55515ce7ca737db1f12343eb440388ff7",
+    "0xefb8e6bdb240bf35d146c6ae2c97a1ea39b7f9a2",
 ]
 
 BOT_CONFIG = {
