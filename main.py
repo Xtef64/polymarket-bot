@@ -40,7 +40,7 @@ BOT_CONFIG = {
     "top_markets_limit":  50,
     "top_markets_display": 10,
     "trade_size_usdc":    10.0,
-    "initial_balance":  1_000.0,
+    "initial_balance":  300.0,
     "max_positions":      80,
     "min_volume_24h":  5_000.0,
     "min_score":          4.0,
