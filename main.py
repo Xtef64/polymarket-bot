@@ -8,6 +8,7 @@ import time
 import json
 import argparse
 import os
+import signal
 import threading
 import traceback
 import requests
@@ -71,6 +72,8 @@ PERF_FILE    = os.path.join(os.path.dirname(__file__), "performance.json")
 _PERF_LOCK   = threading.Lock()   # protège perf dict + écriture fichier
 _price_cache: dict = {}           # token_id → prix courant (mis à jour par le refresher)
 MAX_CYCLES_IN_MEMORY = 500        # cap anti-OOM : garde uniquement les N derniers cycles
+MAX_CONSECUTIVE_ERRORS = 10       # backoff max après erreurs répétées
+_consecutive_errors   = 0         # compteur d'erreurs consécutives (reset à chaque succès)
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -212,15 +215,16 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         ),
     }
 
-    # Écriture atomique : écrit dans un fichier temporaire puis renomme
-    # pour éviter la corruption en cas d'exécutions concurrentes
-    with _PERF_LOCK:
-        tmp = PERF_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, PERF_FILE)
-
-    print(f"  >> performance.json mis a jour (cycle #{cycle}, net_worth=${portfolio.net_worth():.2f})")
+    # Écriture atomique avec protection totale contre les erreurs I/O
+    try:
+        with _PERF_LOCK:
+            tmp = PERF_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, PERF_FILE)
+        print(f"  >> performance.json mis a jour (cycle #{cycle}, net_worth=${portfolio.net_worth():.2f})")
+    except Exception as e:
+        print(f"  [WARN] Impossible d'ecrire performance.json : {e}")
 
 
 def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
@@ -389,70 +393,97 @@ def run_cycle(
     print(f"\n[Cycle #{cycle}] {ts} UTC")
 
     # 0. Fermeture automatique des positions périmées (>24h)
-    closed_orders = trader.auto_close_stale_positions()
-    if closed_orders:
-        print(f"  >> {len(closed_orders)} position(s) fermee(s) automatiquement")
-        if tg_handler:
-            freed = sum(o.price * o.shares for o in closed_orders)
-            lines = [f"♻️ <b>Auto-close {len(closed_orders)} position(s) périmée(s)</b>"]
-            for o in closed_orders:
-                lines.append(f"  {'🟢' if o.price >= 0 else '🔴'} SELL {o.outcome} {o.shares:.1f}sh @ ${o.price:.3f}")
-            lines.append(f"  Cash libéré : <b>${freed:.2f} USDC</b>")
-            lines.append(f"  Cash total  : <b>${trader.portfolio.balance_usdc:.2f} USDC</b>")
-            tg_send("\n".join(lines))
+    try:
+        closed_orders = trader.auto_close_stale_positions()
+        if closed_orders:
+            print(f"  >> {len(closed_orders)} position(s) fermee(s) automatiquement")
+            if tg_handler:
+                freed = sum(o.price * o.shares for o in closed_orders)
+                lines = [f"Auto-close {len(closed_orders)} position(s) perimee(s)"]
+                for o in closed_orders:
+                    lines.append(f"  SELL {o.outcome} {o.shares:.1f}sh @ ${o.price:.3f}")
+                lines.append(f"  Cash libere : ${freed:.2f} USDC")
+                tg_send("\n".join(lines))
+    except Exception as e:
+        print(f"  [WARN] auto_close_stale_positions : {e}")
 
     # 1. Snapshot wallets
     print("  >> Snapshot wallets...")
-    snapshot = tracker.snapshot()
+    try:
+        snapshot = tracker.snapshot()
+    except Exception as e:
+        print(f"  [WARN] snapshot wallets impossible : {e} — cycle skipped")
+        snapshot = {}
 
     # 2. Nouveaux trades
-    new_trades = tracker.detect_new_trades(snapshot)
-    print(f"  >> {len(new_trades)} nouveau(x) trade(s) detecte(s)")
+    try:
+        new_trades = tracker.detect_new_trades(snapshot)
+        print(f"  >> {len(new_trades)} nouveau(x) trade(s) detecte(s)")
+    except Exception as e:
+        print(f"  [WARN] detect_new_trades : {e}")
+        new_trades = []
 
     # 3. Marchés
     print("  >> Analyse des marches...")
-    top_markets   = analyzer.get_top_markets(limit=BOT_CONFIG["top_markets_limit"])
-    market_lookup = build_market_lookup(top_markets)
-    print(f"  >> {len(top_markets)} marches qualifies")
+    try:
+        top_markets   = analyzer.get_top_markets(limit=BOT_CONFIG["top_markets_limit"])
+        market_lookup = build_market_lookup(top_markets)
+        print(f"  >> {len(top_markets)} marches qualifies")
+    except Exception as e:
+        print(f"  [WARN] get_top_markets : {e}")
+        top_markets, market_lookup = [], {}
 
-    # 4. Affichage
-    tracker.display_summary(snapshot)
-    analyzer.display_top(top_markets, top_n=BOT_CONFIG["top_markets_display"])
-
-    mispriced = analyzer.find_mispriced(top_markets)
-    if mispriced:
-        print(f"\n  Marches potentiellement mal prices : {len(mispriced)}")
-        for m in mispriced[:5]:
-            print(
-                f"    gap={m['price_gap']:.4f} | YES={m['yes_price']:.3f} "
-                f"NO={m['no_price']:.3f} | {m['question']}"
-            )
+    # 4. Affichage (non-critique)
+    try:
+        tracker.display_summary(snapshot)
+        analyzer.display_top(top_markets, top_n=BOT_CONFIG["top_markets_display"])
+        mispriced = analyzer.find_mispriced(top_markets)
+        if mispriced:
+            print(f"\n  Marches potentiellement mal prices : {len(mispriced)}")
+            for m in mispriced[:3]:
+                print(f"    gap={m['price_gap']:.4f} | {m['question'][:60]}")
+    except Exception as e:
+        print(f"  [WARN] affichage : {e}")
 
     # 5. Copie
     executed_orders = []
     if new_trades:
-        print(f"\n  >> Copie de {len(new_trades)} trade(s)...")
-        executed_orders = trader.process_new_trades(new_trades, market_lookup)
-        print(f"  >> {len(executed_orders)} ordre(s) simule(s)")
-        # Alertes Telegram pour chaque ordre simulé
-        if tg_handler:
-            for order in executed_orders:
-                notify_trade(order)
+        try:
+            print(f"\n  >> Copie de {len(new_trades)} trade(s)...")
+            executed_orders = trader.process_new_trades(new_trades, market_lookup)
+            print(f"  >> {len(executed_orders)} ordre(s) simule(s)")
+            if tg_handler:
+                for order in executed_orders:
+                    try:
+                        notify_trade(order)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"  [WARN] process_new_trades : {e}")
 
-    # 6. Portfolio
-    trader.portfolio.display()
-    trader.display_log(last_n=5)
+    # 6. Portfolio (non-critique)
+    try:
+        trader.portfolio.display()
+        trader.display_log(last_n=5)
+    except Exception as e:
+        print(f"  [WARN] display portfolio : {e}")
 
     # 7. Sauvegarde performance
-    save_perf(perf, trader, cycle, snapshot,
-              new_trades=len(new_trades),
-              executed=len(executed_orders),
-              top_markets=top_markets)
+    try:
+        save_perf(perf, trader, cycle, snapshot,
+                  new_trades=len(new_trades),
+                  executed=len(executed_orders),
+                  top_markets=top_markets)
+    except Exception as e:
+        print(f"  [WARN] save_perf : {e}")
 
-    # Résumé Telegram de fin de cycle (seulement si des trades ont eu lieu)
+    # Résumé Telegram (non-critique)
     if tg_handler and executed_orders:
-        notify_cycle(cycle, len(new_trades), len(executed_orders),
-                     trader.portfolio.net_worth())
+        try:
+            notify_cycle(cycle, len(new_trades), len(executed_orders),
+                         trader.portfolio.net_worth())
+        except Exception:
+            pass
 
 
 def main() -> None:
@@ -507,17 +538,33 @@ def main() -> None:
     )
     price_thread.start()
 
+    # ── Gestionnaire SIGTERM (Railway arrête proprement avant de tuer) ──────────
+    def _handle_sigterm(signum, frame):
+        print("\n  [SIGTERM] Signal reçu — arrêt propre demandé par Railway")
+        stop_event.set()
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except Exception:
+        pass  # Windows ne supporte pas tous les signaux
+
     tg_handler = TelegramCommandHandler(trader, stop_event, started_at)
     tg_handler.start()
     notify_start(dry_run, len(WALLETS_TO_TRACK))
 
+    global _consecutive_errors
+
     try:
         while not stop_event.is_set():
             cycle += 1
+            cycle_ok = False
             try:
                 run_cycle(tracker, analyzer, trader, cycle, perf, tg_handler)
+                cycle_ok = True
+                _consecutive_errors = 0
             except Exception as e:
-                print(f"  [ERREUR cycle #{cycle}] {e}")
+                _consecutive_errors += 1
+                print(f"  [ERREUR cycle #{cycle}] ({_consecutive_errors} consécutives) {e}")
                 traceback.print_exc()
 
             if args.cycles and cycle >= args.cycles:
@@ -527,18 +574,34 @@ def main() -> None:
             if stop_event.is_set():
                 break
 
-            print(f"\n  Prochain cycle dans {BOT_CONFIG['poll_interval_sec']}s... (Ctrl+C pour arreter)")
-            stop_event.wait(timeout=BOT_CONFIG["poll_interval_sec"])
+            # Backoff exponentiel si erreurs répétées (max 5 min)
+            if not cycle_ok and _consecutive_errors > 0:
+                backoff = min(30 * (2 ** (_consecutive_errors - 1)), 300)
+                print(f"  >> Backoff {backoff}s avant prochain cycle (erreur #{_consecutive_errors})")
+                stop_event.wait(timeout=backoff)
+            else:
+                print(f"\n  Prochain cycle dans {BOT_CONFIG['poll_interval_sec']}s...")
+                stop_event.wait(timeout=BOT_CONFIG["poll_interval_sec"])
 
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        # Filet de sécurité final — ne devrait jamais arriver
+        print(f"  [FATAL] Erreur hors boucle : {e}")
+        traceback.print_exc()
     finally:
         tg_handler.stop()
-        print("\n\n  Bot arrete par l'utilisateur.")
-        trader.portfolio.display()
+        print("\n\n  Bot arrete.")
+        try:
+            trader.portfolio.display()
+        except Exception:
+            pass
         print(f"\n  Total ordres simules : {trader.portfolio.total_orders_count}")
         print(f"  Performances sauvegardees dans : {PERF_FILE}")
-        notify_stop(trader.portfolio.total_orders_count, trader.portfolio.net_worth())
+        try:
+            notify_stop(trader.portfolio.total_orders_count, trader.portfolio.net_worth())
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
