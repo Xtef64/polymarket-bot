@@ -60,11 +60,14 @@ class SimulatedOrder:
 class PortfolioSimulator:
     """Suit le portefeuille en mode dry run."""
 
+    _MAX_ORDER_LOG = 200  # garde uniquement les N derniers ordres en mémoire
+
     def __init__(self, initial_usdc: float = 300.0):
         self.balance_usdc  = initial_usdc
         self.positions: dict[str, dict] = {}  # token_id → position
         self.order_log: list[SimulatedOrder] = []
         self.realized_pnl = 0.0
+        self.total_orders_count = 0  # compteur cumulatif (non affecté par le cap)
 
     def apply_order(self, order: SimulatedOrder) -> bool:
         """Applique un ordre simulé au portefeuille virtuel."""
@@ -100,6 +103,10 @@ class PortfolioSimulator:
                 del self.positions[order.token_id]
 
         self.order_log.append(order)
+        self.total_orders_count += 1
+        # Cap pour éviter la croissance mémoire infinie
+        if len(self.order_log) > self._MAX_ORDER_LOG:
+            self.order_log = self.order_log[-self._MAX_ORDER_LOG:]
         return True
 
     def net_worth(self, current_prices: Optional[dict] = None) -> float:
@@ -142,6 +149,8 @@ class CopyTrader:
         self.max_positions   = max_positions
         self.portfolio       = PortfolioSimulator(initial_balance)
         self._processed_ids: set[str] = set()
+        self._processed_ids_order: list[str] = []  # pour éviction FIFO
+        self._MAX_PROCESSED_IDS = 5_000
 
     # ── Validation ────────────────────────────────────────────────────────────
 
@@ -210,6 +219,11 @@ class CopyTrader:
         if trade_id in self._processed_ids:
             return None
         self._processed_ids.add(trade_id)
+        self._processed_ids_order.append(trade_id)
+        # Éviction FIFO pour éviter la croissance infinie
+        if len(self._processed_ids_order) > self._MAX_PROCESSED_IDS:
+            evicted = self._processed_ids_order.pop(0)
+            self._processed_ids.discard(evicted)
 
         side    = (trade.get("side") or "BUY").upper()
         outcome = (trade.get("outcome") or "YES").upper()

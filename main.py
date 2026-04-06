@@ -70,6 +70,7 @@ BOT_CONFIG = {
 PERF_FILE    = os.path.join(os.path.dirname(__file__), "performance.json")
 _PERF_LOCK   = threading.Lock()   # protège perf dict + écriture fichier
 _price_cache: dict = {}           # token_id → prix courant (mis à jour par le refresher)
+MAX_CYCLES_IN_MEMORY = 500        # cap anti-OOM : garde uniquement les N derniers cycles
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -83,6 +84,8 @@ def load_perf() -> dict:
             # Toujours synchroniser wallets et initial_balance avec la config actuelle
             data.setdefault("meta", {})["wallets"] = WALLETS_TO_TRACK
             data["meta"]["initial_balance"] = BOT_CONFIG["initial_balance"]
+            data.setdefault("summary", {})
+            data.setdefault("cycles", [])
             return data
         except (json.JSONDecodeError, OSError):
             pass
@@ -174,7 +177,7 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
             "net_worth":      portfolio.net_worth(),
             "realized_pnl":   round(portfolio.realized_pnl, 4),
             "open_positions": len(portfolio.positions),
-            "total_orders":   len(portfolio.order_log),
+            "total_orders":   portfolio.total_orders_count,
             "return_pct":     round(
                 (portfolio.net_worth() - BOT_CONFIG["initial_balance"])
                 / BOT_CONFIG["initial_balance"] * 100, 4
@@ -187,12 +190,15 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
     }
 
     data["cycles"].append(cycle_entry)
+    # Cap anti-OOM : ne garde que les derniers cycles en mémoire/JSON
+    if len(data["cycles"]) > MAX_CYCLES_IN_MEMORY:
+        data["cycles"] = data["cycles"][-MAX_CYCLES_IN_MEMORY:]
 
     # Résumé global mis à jour
     data["summary"] = {
         "last_update":      now,
         "total_cycles":     cycle,
-        "total_orders":     len(portfolio.order_log),
+        "total_orders":     portfolio.total_orders_count,
         "net_worth":        portfolio.net_worth(),
         "cash_usdc":        round(portfolio.balance_usdc, 4),
         "realized_pnl":     round(portfolio.realized_pnl, 4),
@@ -229,10 +235,11 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
     if not positions:
         return
 
-    # Restaure le cash
+    # Restaure le cash et le compteur d'ordres
     saved_cash = port.get("cash_usdc", BOT_CONFIG["initial_balance"])
     trader.portfolio.balance_usdc = saved_cash
     trader.portfolio.realized_pnl = port.get("realized_pnl", 0.0)
+    trader.portfolio.total_orders_count = perf.get("summary", {}).get("total_orders", 0)
 
     # Restaure les positions (avec opened_at si présent)
     restored = 0
@@ -321,6 +328,7 @@ def _do_price_refresh(trader: "CopyTrader", perf: dict) -> None:
             last_cycle["prices_updated_at"] = now
 
         unrealized_total = total_value - total_cost
+        perf.setdefault("summary", {})
         perf["summary"]["unrealized_pnl"]    = round(unrealized_total, 4)
         perf["summary"]["prices_updated_at"] = now
 
@@ -528,9 +536,9 @@ def main() -> None:
         tg_handler.stop()
         print("\n\n  Bot arrete par l'utilisateur.")
         trader.portfolio.display()
-        print(f"\n  Total ordres simules : {len(trader.portfolio.order_log)}")
+        print(f"\n  Total ordres simules : {trader.portfolio.total_orders_count}")
         print(f"  Performances sauvegardees dans : {PERF_FILE}")
-        notify_stop(len(trader.portfolio.order_log), trader.portfolio.net_worth())
+        notify_stop(trader.portfolio.total_orders_count, trader.portfolio.net_worth())
 
 
 if __name__ == "__main__":

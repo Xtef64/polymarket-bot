@@ -18,7 +18,7 @@ def get_positions(wallet: str) -> list[dict]:
     url = f"{DATA_API}/positions"
     params = {"user": wallet.lower(), "sizeThreshold": "0"}
     try:
-        r = requests.get(url, params=params, headers=HEADERS, timeout=10)
+        r = requests.get(url, params=params, headers=HEADERS, timeout=6)
         r.raise_for_status()
         return r.json()
     except requests.RequestException as e:
@@ -31,7 +31,7 @@ def get_trade_history(wallet: str, limit: int = 50) -> list[dict]:
     url = f"{DATA_API}/trades"
     params = {"user": wallet.lower(), "limit": limit}
     try:
-        r = requests.get(url, params=params, headers=HEADERS, timeout=10)
+        r = requests.get(url, params=params, headers=HEADERS, timeout=6)
         r.raise_for_status()
         data = r.json()
         # Injecte le wallet dans chaque trade pour le tracking
