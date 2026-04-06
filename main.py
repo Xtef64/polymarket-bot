@@ -32,24 +32,7 @@ from telegram_notifier  import (
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 WALLETS_TO_TRACK = [
-    # ── Top traders Polymarket leaderboard — PnL réalisé POSITIF 30j vérifié
-    # Source : polymarket.com/leaderboard — tous > +$500 000 sur 30 jours
-    "0xdc876e6873772d38716fda7f2452a78d426d7ab6",  # anon-dc87            | PnL30j=+$1 495 977  [#11]
-    "0xf195721ad850377c96cd634457c70cd9e8308057",  # anon-f195            | PnL30j=+$1 459 819  [#12]
-    "0x93abbc022ce98d6f45d4444b594791cc4b7a9723",  # anon-93ab            | PnL30j=+$1 295 513  [#13]
-    "0x59a0744db1f39ff3afccd175f80e6e8dfc239a09",  # anon-59a0            | PnL30j=+$1 202 926  [#14]
-    "0x8f037a2e4fd49d11267f4ab874ab7ba745ac64d6",  # anon-8f03            | PnL30j=+$1 185 569  [#15]
-    "0x50b1db131a24a9d9450bbd0372a95d32ea88f076",  # anon-50b1            | PnL30j=+$1 126 032  [#16]
-    "0x204f72f35326db932158cba6adff0b9a1da95e14",  # swisstony            | PnL30j=+$1 089 278  [#17]
-    "0x8c80d213c0cbad777d06ee3f58f6ca4bc03102c3",  # anon-8c80            | PnL30j=+$  951 431  [#18]
-    "0xb6d6e99d3bfe055874a04279f659f009fd57be17",  # anon-b6d6            | PnL30j=+$  887 474  [#19]
-    "0x07921379f7b31ef93da634b688b2fe36897db778",  # anon-0792            | PnL30j=+$  879 527  [#20]
-    "0xee613b3fc183ee44f9da9c05f53e2da107e3debf",  # sovereign2013        | PnL30j=+$1 728 688  [#10]
-    "0x492442eab586f242b53bda933fd5de859c8a3782",  # anon-top1            | PnL30j=+$5 920 735  [#1]
-    "0x02227b8f5a9636e895607edd3185ed6ee5598ff7",  # HorizonSplendidView  | PnL30j=+$4 016 108  [#2]
-    "0xefbc5fec8d7b0acdc8911bdd9a98d6964308f9a2",  # reachingthesky       | PnL30j=+$3 742 635  [#3]
-    "0xc2e7800b5af46e6093872b177b7a5e7f0563be51",  # beachboy4            | PnL30j=+$3 179 491  [#4]
-    "0xbddf61af533ff524d27154e589d2d7a81510c684",  # Countryside          | PnL30j=+$2 203 283  [#7]
+    "0x751a2b86cab503496efd325c8344e10159349ea1",
 ]
 
 BOT_CONFIG = {
