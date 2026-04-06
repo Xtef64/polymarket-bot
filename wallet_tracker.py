@@ -54,17 +54,25 @@ def get_positions(wallet: str) -> list[dict]:
 
 
 def get_trade_history(wallet: str, limit: int = 20) -> list[dict]:
-    """Retourne l'historique des trades d'un wallet."""
+    """Retourne l'historique des trades d'un wallet (max 50 pour économiser mémoire)."""
     result = _safe_get(
         f"{DATA_API}/trades",
-        params={"user": wallet.lower(), "limit": limit},
+        params={"user": wallet.lower(), "limit": min(limit, 50)},
         label=f"trades {wallet[:10]}"
     )
     if not isinstance(result, list):
         return []
     for t in result:
         t.setdefault("wallet", wallet)
-    return result
+    # Garde uniquement les champs utiles pour réduire l'empreinte mémoire
+    return [
+        {k: t.get(k) for k in (
+            "conditionId", "timestamp", "side", "outcome", "price",
+            "size", "asset", "asset_id", "tokenId", "market",
+            "proxyWallet", "wallet"
+        )}
+        for t in result[:50]
+    ]
 
 
 def compute_pnl(positions: list[dict]) -> dict:
@@ -132,7 +140,7 @@ class WalletTracker:
                     key = self._trade_key(trade)
                     if key not in prev_keys:
                         new_trades.append({**trade, "wallet": wallet})
-                self._last_trades[wallet] = data.get("recent_trades", [])
+                self._last_trades[wallet] = data.get("recent_trades", [])[:50]
         except Exception as e:
             print(f"  [WalletTracker] Erreur detect_new_trades : {e}")
         return new_trades

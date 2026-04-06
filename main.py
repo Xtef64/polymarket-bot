@@ -8,6 +8,7 @@ import time
 import json
 import argparse
 import os
+import gc
 import signal
 import threading
 import traceback
@@ -32,38 +33,20 @@ from telegram_notifier  import (
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-# Leaderboard Polymarket — top traders par profit (30 jours), PnL >= +$1 000
-# Source : polymarket.com/leaderboard — extrait le 2026-04-06
+# Top 3 du leaderboard Polymarket par profit (30j) — limité à 3 pour réduire l'empreinte mémoire
 WALLETS_TO_TRACK = [
     "0x492442eab586f242b53bda933fd5de859c8a3782",  # #1  +$5,734,027
     "0x02227b8f5a9636e895607edd3185ed6ee5598ff7",  # #2  +$4,016,108  HorizonSplendidView
     "0xefbc5fec8d7b0acdc8911bdd9a98d6964308f9a2",  # #3  +$3,742,635  reachingthesky
-    "0xc2e7800b5af46e6093872b177b7a5e7f0563be51",  # #4  +$3,476,928  beachboy4
-    "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1",  # #5  +$2,528,453
-    "0x019782cab5d844f02bafb71f512758be78579f3c",  # #6  +$2,416,975  majorexploiter
-    "0xbddf61af533ff524d27154e589d2d7a81510c684",  # #7  +$1,745,218  Countryside
-    "0xee613b3fc183ee44f9da9c05f53e2da107e3debf",  # #8  +$1,733,947  sovereign2013
-    "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",  # #9  +$1,688,784  RN1
-    "0xdc876e6873772d38716fda7f2452a78d426d7ab6",  # #10 +$1,495,977  432614799197
-    "0xf195721ad850377c96cd634457c70cd9e8308057",  # #11 +$1,460,314  lo34567Taipe
-    "0xb45a797faa52b0fd8adc56d30382022b7b12192c",  # #12 +$1,305,067  bcda
-    "0x59a0744db1f39ff3afccd175f80e6e8dfc239a09",  # #13 +$1,202,927  Blessed-Sunshine
-    "0x8f037a2e4fd49d11267f4ab874ab7ba745ac64d6",  # #14 +$1,187,407  Anointed-Connect
-    "0x50b1db131a24a9d9450bbd0372a95d32ea88f076",  # #15 +$1,126,032  blindStaking
-    "0x93abbc022ce98d6f45d4444b594791cc4b7a9723",  # #16 +$1,109,454  gatorr
-    "0x204f72f35326db932158cba6adff0b9a1da95e14",  # #17 +$1,056,821  swisstony
-    "0x8c80d213c0cbad777d06ee3f58f6ca4bc03102c3",  # #18 +$949,530   SecondWindCapital
-    "0x2b3ff45c91540e46fae1e0c72f61f4b049453446",  # #19 +$902,311   Mentallyillgambld
-    "0xb6d6e99d3bfe055874a04279f659f009fd57be17",  # #20 +$887,475   JPMorgan101
 ]
 
 BOT_CONFIG = {
     "poll_interval_sec":  60,
-    "top_markets_limit":  50,
+    "top_markets_limit":  30,   # réduit de 50 → 30 pour économiser mémoire
     "top_markets_display": 10,
     "trade_size_usdc":    10.0,
     "initial_balance":  300.0,
-    "max_positions":      80,
+    "max_positions":      20,   # réduit de 80 → 20 max
     "min_volume_24h":  5_000.0,
     "min_score":          4.0,
 }
@@ -71,9 +54,9 @@ BOT_CONFIG = {
 PERF_FILE    = os.path.join(os.path.dirname(__file__), "performance.json")
 _PERF_LOCK   = threading.Lock()   # protège perf dict + écriture fichier
 _price_cache: dict = {}           # token_id → prix courant (mis à jour par le refresher)
-MAX_CYCLES_IN_MEMORY = 500        # cap anti-OOM : garde uniquement les N derniers cycles
+MAX_CYCLES_IN_MEMORY  = 200        # cap anti-OOM : garde uniquement les N derniers cycles
 MAX_CONSECUTIVE_ERRORS = 10       # backoff max après erreurs répétées
-_consecutive_errors   = 0         # compteur d'erreurs consécutives (reset à chaque succès)
+_consecutive_errors    = 0        # compteur d'erreurs consécutives (reset à chaque succès)
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -128,7 +111,7 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
             "volume_24h": m["volume_24h"],
             "score":      m["score"],
         }
-        for m in top_markets[:10]
+        for m in top_markets[:5]  # réduit de 10 → 5 pour économiser mémoire
     ]
 
     # Positions ouvertes — inclut le prix courant depuis _price_cache si disponible
@@ -484,6 +467,14 @@ def run_cycle(
                          trader.portfolio.net_worth())
         except Exception:
             pass
+
+    # 8. Nettoyage mémoire explicite après chaque cycle
+    snapshot.clear()
+    new_trades.clear()
+    top_markets.clear()
+    market_lookup.clear()
+    executed_orders.clear()
+    gc.collect()
 
 
 def main() -> None:
