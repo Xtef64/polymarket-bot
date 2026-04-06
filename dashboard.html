@@ -507,24 +507,26 @@ function renderOrders(cycles) {
 
 // ── KPIs ─────────────────────────────────────────────────────────────────────
 function renderKPIs(d) {
-  const { meta, summary, cycles } = d;
+  const { meta, cycles } = d;
+  const summary = d.summary || {};
   const totalDet = cycles.reduce((a,c)=>a+c.new_trades_detected,0);
   const totalExe = cycles.reduce((a,c)=>a+c.orders_executed,0);
   const copyPct  = totalDet>0 ? (totalExe/totalDet*100).toFixed(1) : '0.0';
   const started  = new Date(meta.started_at);
   const sec      = Math.floor((Date.now()-started)/1000);
   const rh=Math.floor(sec/3600), rm=Math.floor((sec%3600)/60), rs=sec%60;
-  const nw=summary.net_worth, ret=summary.return_pct;
+  const initBal  = meta.initial_balance || 300;
+  const nw=summary.net_worth??initBal, ret=summary.return_pct??0;
   document.getElementById('kv-nw').innerHTML   = `<span class="${clsPct(ret)}">${fmt$(nw)}</span>`;
-  document.getElementById('ks-ret').innerHTML  = `<span class="${clsPct(ret)}">${fmtPct(ret)}</span> vs $${(meta.initial_balance||300).toLocaleString('fr-FR')}`;
-  const pnl=summary.realized_pnl;
+  document.getElementById('ks-ret').innerHTML  = `<span class="${clsPct(ret)}">${fmtPct(ret)}</span> vs $${initBal.toLocaleString('fr-FR')}`;
+  const pnl=summary.realized_pnl??0;
   document.getElementById('kv-pnl').innerHTML  = `<span class="${clsPct(pnl)}">${fmt$(pnl)}</span>`;
-  document.getElementById('ks-orders').textContent = `${summary.total_orders} ordres simulés`;
-  document.getElementById('kv-cash').textContent   = fmt$(summary.cash_usdc);
-  document.getElementById('ks-pos').textContent    = `${summary.open_positions} / 60 positions`;
+  document.getElementById('ks-orders').textContent = `${summary.total_orders??0} ordres simulés`;
+  document.getElementById('kv-cash').textContent   = fmt$(summary.cash_usdc??initBal);
+  document.getElementById('ks-pos').textContent    = `${summary.open_positions??0} / 60 positions`;
   document.getElementById('kv-copy').textContent   = `${copyPct}%`;
   document.getElementById('ks-det').textContent    = `${totalExe}/${totalDet} trades copiés`;
-  document.getElementById('kv-cycles').textContent = summary.total_cycles;
+  document.getElementById('kv-cycles').textContent = summary.total_cycles??0;
   document.getElementById('ks-rt').textContent     = `${rh}h ${rm}m ${rs}s`;
 }
 
