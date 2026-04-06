@@ -17,7 +17,9 @@ MIN_PRICE               = 0.05   # évite les moonshots à 2¢
 MAX_PRICE               = 0.95   # évite les marchés quasi-résolus
 MIN_MARKET_VOLUME       = 5_000  # liquidité minimale 24h
 CLOB_API                = "https://clob.polymarket.com"
+GAMMA_API               = "https://gamma-api.polymarket.com"
 STALE_POSITION_HOURS    = 24     # ferme les positions ouvertes depuis plus de X heures
+MAX_RESOLUTION_HOURS    = 3      # ignore les marchés qui se résolvent dans plus de 3h
 
 
 class SimulatedOrder:
@@ -143,6 +145,22 @@ class CopyTrader:
 
     # ── Validation ────────────────────────────────────────────────────────────
 
+    def _fetch_market_end_date(self, condition_id: str) -> Optional[str]:
+        """Récupère la date de résolution d'un marché via l'API Gamma."""
+        try:
+            r = requests.get(
+                f"{GAMMA_API}/markets",
+                params={"condition_id": condition_id},
+                timeout=5,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list) and data:
+                    return data[0].get("endDate")
+        except Exception:
+            pass
+        return None
+
     def _is_valid_trade(self, trade: dict, market_info: Optional[dict] = None) -> tuple[bool, str]:
         """Retourne (valide, raison) pour un trade candidat."""
         price = float(trade.get("price", 0) or 0)
@@ -154,6 +172,27 @@ class CopyTrader:
             vol = float(market_info.get("volume_24h", 0) or 0)
             if vol < MIN_MARKET_VOLUME:
                 return False, f"volume trop faible (${vol:,.0f})"
+
+        # Filtre résolution : marché doit se résoudre dans les 3 prochaines heures
+        end_date_str = market_info.get("end_date") if market_info else None
+        if end_date_str is None:
+            condition_id = trade.get("conditionId") or trade.get("market", "")
+            if condition_id:
+                end_date_str = self._fetch_market_end_date(condition_id)
+        if end_date_str is not None:
+            try:
+                end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+                hours_left = (end_date - now).total_seconds() / 3600
+                if hours_left < 0:
+                    return False, f"marché déjà résolu"
+                if hours_left > MAX_RESOLUTION_HOURS:
+                    return False, f"résolution trop loin ({hours_left:.1f}h > {MAX_RESOLUTION_HOURS}h)"
+            except (ValueError, TypeError):
+                pass
+        else:
+            return False, "date de résolution inconnue"
+
         return True, "OK"
 
     # ── Copie de trade ────────────────────────────────────────────────────────
