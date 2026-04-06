@@ -265,7 +265,7 @@ function drawPortfolioChart(cycles) {
   const labels  = cycles.map(c => new Date(c.timestamp).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'}));
   const nw      = cycles.map(c => c.portfolio.net_worth);
   const cash    = cycles.map(c => c.portfolio.cash_usdc);
-  const initial = cycles[0]?.portfolio?.net_worth || 1000;
+  const initial = cycles[0]?.portfolio?.net_worth || 300;
   getOrCreate('chart-portfolio', 'line', {
     labels,
     datasets: [
@@ -516,7 +516,7 @@ function renderKPIs(d) {
   const rh=Math.floor(sec/3600), rm=Math.floor((sec%3600)/60), rs=sec%60;
   const nw=summary.net_worth, ret=summary.return_pct;
   document.getElementById('kv-nw').innerHTML   = `<span class="${clsPct(ret)}">${fmt$(nw)}</span>`;
-  document.getElementById('ks-ret').innerHTML  = `<span class="${clsPct(ret)}">${fmtPct(ret)}</span> vs $${(meta.initial_balance||1000).toLocaleString('fr-FR')}`;
+  document.getElementById('ks-ret').innerHTML  = `<span class="${clsPct(ret)}">${fmtPct(ret)}</span> vs $${(meta.initial_balance||300).toLocaleString('fr-FR')}`;
   const pnl=summary.realized_pnl;
   document.getElementById('kv-pnl').innerHTML  = `<span class="${clsPct(pnl)}">${fmt$(pnl)}</span>`;
   document.getElementById('ks-orders').textContent = `${summary.total_orders} ordres simulés`;
