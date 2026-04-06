@@ -60,7 +60,7 @@ class SimulatedOrder:
 class PortfolioSimulator:
     """Suit le portefeuille en mode dry run."""
 
-    def __init__(self, initial_usdc: float = 1_000.0):
+    def __init__(self, initial_usdc: float = 300.0):
         self.balance_usdc  = initial_usdc
         self.positions: dict[str, dict] = {}  # token_id → position
         self.order_log: list[SimulatedOrder] = []
@@ -135,7 +135,7 @@ class CopyTrader:
         dry_run: bool = True,
         trade_size_usdc: float = DEFAULT_TRADE_SIZE_USDC,
         max_positions: int = MAX_OPEN_POSITIONS,
-        initial_balance: float = 1_000.0,
+        initial_balance: float = 300.0,
     ):
         self.dry_run         = dry_run
         self.trade_size_usdc = min(trade_size_usdc, MAX_TRADE_SIZE_USDC)
