@@ -59,8 +59,9 @@ def load_perf() -> dict:
         try:
             with open(PERF_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Toujours synchroniser la liste des wallets avec la config actuelle
+            # Toujours synchroniser wallets et initial_balance avec la config actuelle
             data.setdefault("meta", {})["wallets"] = WALLETS_TO_TRACK
+            data["meta"]["initial_balance"] = BOT_CONFIG["initial_balance"]
             return data
         except (json.JSONDecodeError, OSError):
             pass
