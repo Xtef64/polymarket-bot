@@ -19,7 +19,7 @@ MIN_MARKET_VOLUME       = 5_000  # liquidité minimale 24h
 CLOB_API                = "https://clob.polymarket.com"
 GAMMA_API               = "https://gamma-api.polymarket.com"
 STALE_POSITION_HOURS    = 24     # ferme les positions ouvertes depuis plus de X heures
-MAX_RESOLUTION_HOURS    = 3      # ignore les marchés qui se résolvent dans plus de 3h
+MAX_RESOLUTION_HOURS    = 24     # ignore les marchés qui se résolvent dans plus de 24h
 
 
 class SimulatedOrder:
