@@ -1,6 +1,7 @@
 """
 wallet_tracker.py - Suit les positions et trades d'un wallet Polymarket
 Robuste : retry automatique, backoff exponentiel, jamais de crash.
+Session HTTP persistante + cache positions (fetch tous les 5 cycles).
 """
 
 import requests
@@ -13,20 +14,27 @@ CLOB_API  = "https://clob.polymarket.com"
 
 HEADERS = {"Accept": "application/json", "User-Agent": "polymarket-bot/1.0"}
 
+# Session persistante — réutilise les connexions TCP (réduit trafic réseau)
+_session = requests.Session()
+_session.headers.update(HEADERS)
+
 
 def _safe_get(url: str, params: dict = None, timeout: int = 6,
               retries: int = 3, label: str = "") -> list | dict | None:
     """GET avec retry + backoff exponentiel. Ne lève jamais d'exception."""
     for attempt in range(retries):
         try:
-            r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            r = _session.get(url, params=params, timeout=timeout)
             if r.status_code == 429:
                 wait = 5 * (attempt + 1)
                 print(f"  [API] Rate-limit 429{' ' + label if label else ''} — attente {wait}s")
                 time.sleep(wait)
                 continue
             if r.status_code == 200:
-                return r.json()
+                data = r.json()
+                r.close()
+                return data
+            r.close()
             # 5xx ou autre : on retente
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
@@ -94,18 +102,40 @@ def compute_pnl(positions: list[dict]) -> dict:
 
 
 class WalletTracker:
+    # Fetch positions toutes les N snapshots seulement (trades restent chaque cycle)
+    _POSITION_FETCH_EVERY = 5
+
     def __init__(self, wallets: list[str]):
         self.wallets = wallets
         self._last_trades: dict[str, list] = {}
+        self._cached_positions: dict[str, list] = {}   # wallet → positions (cache)
+        self._cached_pnl: dict[str, dict] = {}         # wallet → pnl (cache)
+        self._snapshot_count = 0
 
     def snapshot(self) -> dict:
-        """Prend un snapshot de tous les wallets suivis. Ne lève jamais d'exception."""
+        """Prend un snapshot de tous les wallets suivis. Ne lève jamais d'exception.
+        Positions fetchées tous les _POSITION_FETCH_EVERY cycles pour économiser le réseau."""
+        self._snapshot_count += 1
+        fetch_positions = (self._snapshot_count % self._POSITION_FETCH_EVERY == 1)
+        if fetch_positions:
+            print(f"  [WalletTracker] Fetch positions (cycle {self._snapshot_count})")
+        else:
+            print(f"  [WalletTracker] Cache positions (prochain fetch dans "
+                  f"{self._POSITION_FETCH_EVERY - (self._snapshot_count % self._POSITION_FETCH_EVERY)} cycles)")
+
         data = {}
         for wallet in self.wallets:
             try:
-                positions = get_positions(wallet)
-                trades    = get_trade_history(wallet, limit=20)
-                pnl       = compute_pnl(positions)
+                if fetch_positions:
+                    positions = get_positions(wallet)
+                    pnl       = compute_pnl(positions)
+                    self._cached_positions[wallet] = positions
+                    self._cached_pnl[wallet]       = pnl
+                else:
+                    positions = self._cached_positions.get(wallet, [])
+                    pnl       = self._cached_pnl.get(wallet, {})
+
+                trades = get_trade_history(wallet, limit=20)
                 data[wallet] = {
                     "positions":     positions,
                     "recent_trades": trades,
@@ -115,7 +145,9 @@ class WalletTracker:
             except Exception as e:
                 print(f"  [WalletTracker] Erreur snapshot {wallet[:10]}... : {e}")
                 data[wallet] = {
-                    "positions": [], "recent_trades": [], "pnl": {},
+                    "positions": self._cached_positions.get(wallet, []),
+                    "recent_trades": [],
+                    "pnl":  self._cached_pnl.get(wallet, {}),
                     "timestamp": datetime.utcnow().isoformat(),
                 }
             time.sleep(0.3)

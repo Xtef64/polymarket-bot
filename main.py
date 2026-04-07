@@ -58,6 +58,10 @@ MAX_CYCLES_IN_MEMORY  = 200        # cap anti-OOM : garde uniquement les N derni
 MAX_CONSECUTIVE_ERRORS = 10       # backoff max après erreurs répétées
 _consecutive_errors    = 0        # compteur d'erreurs consécutives (reset à chaque succès)
 
+# Session HTTP persistante pour le price refresher — réutilise les connexions TCP
+_price_session = requests.Session()
+_price_session.headers.update({"Accept": "application/json", "User-Agent": "polymarket-bot/1.0"})
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -257,22 +261,30 @@ def _do_price_refresh(trader: "CopyTrader", perf: dict) -> None:
         token_ids = [tid for tid in trader.portfolio.positions.keys() if tid]
 
     if not token_ids:
-        print("  [price_refresh] Aucune position ouverte — rien à rafraîchir")
+        # Purge complète du cache si plus aucune position ouverte
+        if _price_cache:
+            print(f"  [price_refresh] Aucune position — purge _price_cache ({len(_price_cache)} entrées)")
+            _price_cache.clear()
+        else:
+            print("  [price_refresh] Aucune position ouverte — rien à rafraîchir")
         return
 
-    # Appels réseau hors verrou
+    # Appels réseau hors verrou (session persistante)
     fetched: dict = {}
     for tid in token_ids:
         try:
-            r = requests.get(
+            r = _price_session.get(
                 f"{CLOB_API}/midpoint",
                 params={"token_id": tid},
                 timeout=5,
             )
             if r.status_code == 200:
                 mid = r.json().get("mid")
+                r.close()
                 if mid is not None:
                     fetched[tid] = float(mid)
+            else:
+                r.close()
         except Exception as exc:
             print(f"  [price_refresh] Erreur midpoint {tid[:16]}... : {exc}")
 
@@ -285,7 +297,13 @@ def _do_price_refresh(trader: "CopyTrader", perf: dict) -> None:
     total_value  = 0.0
 
     with _PERF_LOCK:
-        # 1. Mettre à jour le cache (utilisé par save_perf pour les futurs cycles)
+        # 1. Mettre à jour le cache + purger les entrées obsolètes (positions fermées)
+        current_token_ids = set(token_ids)
+        stale = [k for k in _price_cache if k not in current_token_ids]
+        for k in stale:
+            del _price_cache[k]
+        if stale:
+            print(f"  [price_refresh] _price_cache : {len(stale)} entrée(s) obsolète(s) purgée(s)")
         _price_cache.update(fetched)
 
         # 2. Mettre à jour immédiatement le dernier cycle dans perf (dashboard temps réel)

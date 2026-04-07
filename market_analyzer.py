@@ -1,6 +1,7 @@
 """
 market_analyzer.py - Analyse les marchés Polymarket et détecte les opportunités
 Robuste : retry automatique, jamais de crash.
+Cache marché : TTL 5 min pour réduire drastiquement le trafic réseau.
 """
 
 import time
@@ -10,20 +11,27 @@ from datetime import datetime, timezone
 GAMMA_API = "https://gamma-api.polymarket.com"
 HEADERS   = {"Accept": "application/json", "User-Agent": "polymarket-bot/1.0"}
 
+# Session persistante — réutilise les connexions TCP (réduit trafic + RAM)
+_session = requests.Session()
+_session.headers.update(HEADERS)
+
 
 def _safe_get(url: str, params: dict = None, timeout: int = 8,
               retries: int = 3) -> list | dict | None:
     """GET avec retry + backoff. Ne lève jamais d'exception."""
     for attempt in range(retries):
         try:
-            r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            r = _session.get(url, params=params, timeout=timeout)
             if r.status_code == 429:
                 wait = 5 * (attempt + 1)
                 print(f"  [MarketAnalyzer] Rate-limit 429 — attente {wait}s")
                 time.sleep(wait)
                 continue
             if r.status_code == 200:
-                return r.json()
+                data = r.json()
+                r.close()
+                return data
+            r.close()
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
         except requests.exceptions.Timeout:
@@ -106,17 +114,28 @@ def score_market(market: dict) -> float:
 
 
 class MarketAnalyzer:
+    # Cache TTL : 5 minutes — réduit les appels API de ~5x
+    _CACHE_TTL_SEC = 300
+
     def __init__(self, min_volume_24h: float = 5_000, min_score: float = 4.0):
-        self.min_volume_24h = min_volume_24h
-        self.min_score      = min_score
+        self.min_volume_24h  = min_volume_24h
+        self.min_score       = min_score
+        self._cached_result: list = []
+        self._cache_ts: float     = 0.0   # epoch seconds du dernier fetch
 
     def get_top_markets(self, limit: int = 50) -> list[dict]:
-        """Filtre et classe les meilleurs marchés. Retourne [] en cas d'erreur."""
+        """Filtre et classe les meilleurs marchés. Cache 5 min pour économiser le réseau."""
+        now = time.monotonic()
+        age = now - self._cache_ts
+        if self._cached_result and age < self._CACHE_TTL_SEC:
+            print(f"  [MarketAnalyzer] Cache hit ({age:.0f}s < {self._CACHE_TTL_SEC}s) — {len(self._cached_result)} marchés")
+            return self._cached_result
+
         try:
             markets = get_markets(limit=limit)
             if not markets:
                 print("  [MarketAnalyzer] Aucun marché reçu (API indisponible ?)")
-                return []
+                return self._cached_result  # retourne le cache périmé plutôt que []
             result = []
             for m in markets:
                 try:
@@ -142,10 +161,12 @@ class MarketAnalyzer:
                 except Exception:
                     continue
             result.sort(key=lambda x: x["score"], reverse=True)
+            self._cached_result = result
+            self._cache_ts      = now
             return result
         except Exception as e:
             print(f"  [MarketAnalyzer] Erreur get_top_markets : {e}")
-            return []
+            return self._cached_result  # retourne cache périmé en cas d'erreur
 
     def display_top(self, markets: list[dict], top_n: int = 10) -> None:
         try:

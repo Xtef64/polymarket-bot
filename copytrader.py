@@ -5,8 +5,13 @@ Mode DRY RUN : simule les ordres sans les envoyer réellement.
 
 import time
 import requests
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+# Session persistante — réutilise les connexions TCP
+_session = requests.Session()
+_session.headers.update({"Accept": "application/json", "User-Agent": "polymarket-bot/1.0"})
 
 
 # ── Constantes de risque ──────────────────────────────────────────────────────
@@ -149,25 +154,39 @@ class CopyTrader:
         self.max_positions   = max_positions
         self.portfolio       = PortfolioSimulator(initial_balance)
         self._processed_ids: set[str] = set()
-        self._processed_ids_order: list[str] = []  # pour éviction FIFO
+        # deque(maxlen) : popleft O(1) au lieu de list.pop(0) O(n)
+        self._processed_ids_order: deque = deque(maxlen=5_000)
         self._MAX_PROCESSED_IDS = 5_000
+        # Cache dates de résolution (ne changent jamais) — évite 1 appel API / trade
+        self._end_date_cache: dict[str, str | None] = {}
 
     # ── Validation ────────────────────────────────────────────────────────────
 
     def _fetch_market_end_date(self, condition_id: str) -> Optional[str]:
-        """Récupère la date de résolution d'un marché via l'API Gamma."""
+        """Récupère la date de résolution d'un marché via l'API Gamma.
+        Résultat mis en cache indéfiniment (les dates ne changent pas)."""
+        if condition_id in self._end_date_cache:
+            return self._end_date_cache[condition_id]
         try:
-            r = requests.get(
+            r = _session.get(
                 f"{GAMMA_API}/markets",
                 params={"condition_id": condition_id},
                 timeout=5,
             )
             if r.status_code == 200:
                 data = r.json()
-                if isinstance(data, list) and data:
-                    return data[0].get("endDate")
+                r.close()
+                end_date = data[0].get("endDate") if isinstance(data, list) and data else None
+                self._end_date_cache[condition_id] = end_date
+                # Cap cache à 2000 entrées pour éviter OOM sur longue durée
+                if len(self._end_date_cache) > 2_000:
+                    oldest = next(iter(self._end_date_cache))
+                    del self._end_date_cache[oldest]
+                return end_date
+            r.close()
         except Exception:
             pass
+        self._end_date_cache[condition_id] = None
         return None
 
     def _is_valid_trade(self, trade: dict, market_info: Optional[dict] = None) -> tuple[bool, str]:
@@ -218,12 +237,12 @@ class CopyTrader:
         )
         if trade_id in self._processed_ids:
             return None
-        self._processed_ids.add(trade_id)
-        self._processed_ids_order.append(trade_id)
-        # Éviction FIFO pour éviter la croissance infinie
-        if len(self._processed_ids_order) > self._MAX_PROCESSED_IDS:
-            evicted = self._processed_ids_order.pop(0)
+        # Éviction FIFO via deque(maxlen) — popleft O(1)
+        if len(self._processed_ids_order) >= self._MAX_PROCESSED_IDS:
+            evicted = self._processed_ids_order[0]  # peek sans pop (deque auto-évince)
             self._processed_ids.discard(evicted)
+        self._processed_ids.add(trade_id)
+        self._processed_ids_order.append(trade_id)  # auto-évince le plus ancien si maxlen atteint
 
         side    = (trade.get("side") or "BUY").upper()
         outcome = (trade.get("outcome") or "YES").upper()
@@ -276,15 +295,17 @@ class CopyTrader:
     def _fetch_midpoint(self, token_id: str) -> Optional[float]:
         """Récupère le prix midpoint actuel depuis l'API CLOB."""
         try:
-            r = requests.get(
+            r = _session.get(
                 f"{CLOB_API}/midpoint",
                 params={"token_id": token_id},
                 timeout=5,
             )
             if r.status_code == 200:
                 mid = r.json().get("mid")
+                r.close()
                 if mid is not None:
                     return float(mid)
+            r.close()
         except Exception:
             pass
         return None
