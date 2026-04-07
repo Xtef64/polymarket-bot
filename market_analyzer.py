@@ -128,14 +128,14 @@ class MarketAnalyzer:
         now = time.monotonic()
         age = now - self._cache_ts
         if self._cached_result and age < self._CACHE_TTL_SEC:
-            print(f"  [MarketAnalyzer] Cache hit ({age:.0f}s < {self._CACHE_TTL_SEC}s) — {len(self._cached_result)} marchés")
-            return self._cached_result
+            print(f"  [MarketAnalyzer] Cache hit ({age:.0f}s < {self._CACHE_TTL_SEC}s) — {len(self._cached_result)} marches")
+            return list(self._cached_result)  # copie pour éviter que .clear() en dehors efface le cache
 
         try:
             markets = get_markets(limit=limit)
             if not markets:
                 print("  [MarketAnalyzer] Aucun marché reçu (API indisponible ?)")
-                return self._cached_result  # retourne le cache périmé plutôt que []
+                return list(self._cached_result)  # retourne le cache périmé plutôt que []
             result = []
             for m in markets:
                 try:
@@ -166,7 +166,7 @@ class MarketAnalyzer:
             return result
         except Exception as e:
             print(f"  [MarketAnalyzer] Erreur get_top_markets : {e}")
-            return self._cached_result  # retourne cache périmé en cas d'erreur
+            return list(self._cached_result)  # retourne cache périmé en cas d'erreur
 
     def display_top(self, markets: list[dict], top_n: int = 10) -> None:
         try:

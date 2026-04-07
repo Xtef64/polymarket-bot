@@ -13,6 +13,11 @@ TELEGRAM_API = "https://api.telegram.org"
 BOT_TOKEN    = os.environ.get("TELEGRAM_BOT_TOKEN", "8743436885:AAGVQ3OOGl_rJeyEoHyRVeIuAvFoB9qXi88")
 CHAT_ID      = os.environ.get("TELEGRAM_CHAT_ID",   "6741061312")
 
+# Sessions persistantes — réutilise les connexions TCP
+_tg_session   = requests.Session()
+_clob_session = requests.Session()
+_clob_session.headers.update({"Accept": "application/json", "User-Agent": "polymarket-bot/1.0"})
+
 COMMANDS_HELP = """🤖 <b>Polymarket Bot — Commandes</b>
 
 📊 /status     – Résumé général du portfolio
@@ -27,13 +32,33 @@ COMMANDS_HELP = """🤖 <b>Polymarket Bot — Commandes</b>
 def _send(text: str) -> None:
     """Envoie un message Telegram (silencieux en cas d'erreur)."""
     try:
-        requests.post(
+        _tg_session.post(
             f"{TELEGRAM_API}/bot{BOT_TOKEN}/sendMessage",
             json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"},
             timeout=8,
         )
     except Exception:
         pass
+
+
+def _flush_pending_updates() -> int:
+    """Vide la queue Telegram des anciens updates (évite de rejouer /stop d'une session précédente).
+    Retourne le prochain offset à utiliser."""
+    try:
+        r = _tg_session.get(
+            f"{TELEGRAM_API}/bot{BOT_TOKEN}/getUpdates",
+            params={"offset": -1, "timeout": 0},  # offset=-1 = dernier update seulement
+            timeout=10,
+        )
+        if r.status_code == 200:
+            results = r.json().get("result", [])
+            if results:
+                latest_id = results[-1]["update_id"]
+                print(f"  [Telegram] Flush {latest_id + 1} (skip updates anciens)")
+                return latest_id + 1
+    except Exception:
+        pass
+    return 0
 
 
 def notify_trade(order) -> None:
@@ -89,6 +114,8 @@ class TelegramCommandHandler:
 
     def start(self) -> None:
         self._running = True
+        # Flush les anciens updates pour éviter de rejouer /stop d'une session précédente
+        self._offset = _flush_pending_updates()
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
 
@@ -109,7 +136,7 @@ class TelegramCommandHandler:
         }
         while self._running and not self._stop_event.is_set():
             try:
-                r = requests.get(
+                r = _tg_session.get(
                     f"{TELEGRAM_API}/bot{BOT_TOKEN}/getUpdates",
                     params={"offset": self._offset, "timeout": 20},
                     timeout=25,
@@ -121,6 +148,7 @@ class TelegramCommandHandler:
                         fn = DISPATCH.get(text)
                         if fn:
                             fn()
+                r.close()
             except Exception:
                 time.sleep(5)
 
@@ -130,11 +158,14 @@ class TelegramCommandHandler:
         prices = {}
         for tid in token_ids:
             try:
-                r = requests.get(f"{CLOB_API}/midpoint", params={"token_id": tid}, timeout=5)
+                r = _clob_session.get(f"{CLOB_API}/midpoint", params={"token_id": tid}, timeout=5)
                 if r.status_code == 200:
                     mid = r.json().get("mid")
+                    r.close()
                     if mid is not None:
                         prices[tid] = float(mid)
+                else:
+                    r.close()
             except Exception:
                 pass
         return prices
