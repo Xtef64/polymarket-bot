@@ -170,27 +170,37 @@ class WalletTracker:
         return new_trades
 
     def detect_position_changes(self, current_snapshot: dict) -> list[dict]:
-        """Détecte les BUY/SELL en comparant les positions ouvertes actuelles vs précédentes.
-        MÉTHODE FIABLE : les positions ouvertes sont par définition sur des marchés actifs.
-        - Nouvelle position apparue  → signal BUY
-        - Position disparue          → signal SELL
-        - Position dont la taille a augmenté → signal BUY supplémentaire
+        """Detecte les BUY/SELL en comparant les positions ouvertes actuelles vs precedentes.
+        METHODE FIABLE : les positions ouvertes sont par definition sur des marches actifs.
+        - Nouvelle position apparue       -> signal BUY
+        - Position disparue               -> signal SELL
+        - Position dont la taille a augmente -> signal BUY supplementaire
+
+        Gestion des nouveaux wallets (ajoutes via leaderboard) :
+        Le premier cycle pour un wallet donne initialise silencieusement son baseline
+        sans emettre de signaux (evite un flood de BUY sur toutes ses positions existantes).
         """
         signals = []
-        is_first_run = not self._last_positions  # premier cycle = initialisation seulement
+        is_global_first_run = not self._last_positions  # aucun wallet initialise
         try:
             for wallet, data in current_snapshot.items():
                 cur_positions = data.get("positions", [])
-                # Index par clé unique
+                # Index par cle unique
                 cur_map: dict[str, dict] = {}
                 for p in cur_positions:
                     k = self._pos_key(p)
                     if k:
                         cur_map[k] = p
 
-                prev_map = self._last_positions.get(wallet, {})
+                # Nouveau wallet : initialiser le baseline silencieusement
+                if wallet not in self._last_positions:
+                    self._last_positions[wallet] = cur_map
+                    print(f"  [PositionChange] Init baseline : {len(cur_map)} positions pour {wallet[:10]}...")
+                    continue
 
-                # Nouvelles positions ou positions augmentées → BUY
+                prev_map = self._last_positions[wallet]
+
+                # Nouvelles positions ou positions augmentees -> BUY
                 for k, pos in cur_map.items():
                     cid = pos.get("conditionId") or pos.get("market") or ""
                     outcome = (pos.get("outcome") or "YES").upper()
@@ -213,9 +223,9 @@ class WalletTracker:
                             "_source":     "position_change",
                         })
                     else:
-                        # Position existante — a-t-elle augmenté de taille ?
+                        # Position existante : a-t-elle augmente de taille ?
                         size_prev = float(prev_map[k].get("size") or prev_map[k].get("cashBalance") or 0)
-                        if size_cur > size_prev * 1.05:  # +5% de tolérance
+                        if size_cur > size_prev * 1.05:  # +5% de tolerance
                             signals.append({
                                 "side":        "BUY",
                                 "conditionId": cid,
@@ -229,7 +239,7 @@ class WalletTracker:
                                 "_source":     "position_increase",
                             })
 
-                # Positions disparues → SELL
+                # Positions disparues -> SELL
                 for k, pos in prev_map.items():
                     if k not in cur_map:
                         cid = pos.get("conditionId") or pos.get("market") or ""
@@ -250,9 +260,6 @@ class WalletTracker:
 
                 self._last_positions[wallet] = cur_map
 
-            if is_first_run:
-                print(f"  [PositionChange] Init baseline : {len(cur_map)} positions memorisees pour {wallet[:10]}...")
-
             if signals:
                 buys  = sum(1 for s in signals if s["side"] == "BUY")
                 sells = sum(1 for s in signals if s["side"] == "SELL")
@@ -260,8 +267,7 @@ class WalletTracker:
         except Exception as e:
             print(f"  [WalletTracker] Erreur detect_position_changes : {e}")
 
-        # Premier cycle = initialisation silencieuse, pas de signaux émis
-        return [] if is_first_run else signals
+        return signals
 
     def display_summary(self, snapshot: dict) -> None:
         try:
