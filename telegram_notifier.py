@@ -104,13 +104,15 @@ def notify_stop(total_orders: int, net_worth: float) -> None:
 
 class TelegramCommandHandler:
 
-    def __init__(self, trader, stop_event: threading.Event, started_at: datetime = None):
-        self._trader     = trader
-        self._stop_event = stop_event
-        self._started_at = started_at or datetime.now(timezone.utc)
-        self._offset     = 0
-        self._thread     = None
-        self._running    = False
+    def __init__(self, trader, stop_event: threading.Event, started_at: datetime = None,
+                 price_cache: dict = None):
+        self._trader      = trader
+        self._stop_event  = stop_event
+        self._started_at  = started_at or datetime.now(timezone.utc)
+        self._price_cache = price_cache if price_cache is not None else {}
+        self._offset      = 0
+        self._thread      = None
+        self._running     = False
 
     def start(self) -> None:
         self._running = True
@@ -143,20 +145,49 @@ class TelegramCommandHandler:
                 )
                 if r.status_code == 200:
                     for upd in r.json().get("result", []):
+                        # Avance toujours l'offset — même pour les messages non-texte
+                        # (photo, sticker…) qui causaient une boucle infinie avant
                         self._offset = upd["update_id"] + 1
-                        text = upd.get("message", {}).get("text", "").strip().lower().split()[0]
-                        fn = DISPATCH.get(text)
+                        raw = upd.get("message", {}).get("text", "") or ""
+                        parts = raw.strip().lower().split()
+                        if not parts:
+                            continue
+                        fn = DISPATCH.get(parts[0])
                         if fn:
-                            fn()
+                            # Exécute la commande dans un thread dédié pour ne jamais
+                            # bloquer le poll loop (les fetch de prix peuvent prendre ~100s)
+                            threading.Thread(target=self._safe_run, args=(fn,),
+                                             daemon=True).start()
                 r.close()
             except Exception:
                 time.sleep(5)
 
+    def _safe_run(self, fn) -> None:
+        """Exécute une commande en isolant les erreurs pour ne pas crasher le thread."""
+        try:
+            fn()
+        except Exception as e:
+            print(f"  [Telegram] Erreur commande : {e}")
+            try:
+                _send(f"Erreur interne : {e}")
+            except Exception:
+                pass
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _fetch_current_prices(self, token_ids: list) -> dict:
+        """Retourne les prix courants. Utilise _price_cache en priorité (déjà rafraîchi
+        toutes les 5 min par le price-refresher) — appel CLOB seulement si manquant."""
         prices = {}
+        missing = []
         for tid in token_ids:
+            cached = self._price_cache.get(tid)
+            if cached is not None:
+                prices[tid] = cached
+            else:
+                missing.append(tid)
+
+        for tid in missing:
             try:
                 r = _clob_session.get(f"{CLOB_API}/midpoint", params={"token_id": tid}, timeout=5)
                 if r.status_code == 200:

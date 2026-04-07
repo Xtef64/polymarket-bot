@@ -601,7 +601,7 @@ def main() -> None:
     except Exception:
         pass  # Windows ne supporte pas tous les signaux
 
-    tg_handler = TelegramCommandHandler(trader, stop_event, started_at)
+    tg_handler = TelegramCommandHandler(trader, stop_event, started_at, price_cache=_price_cache)
     tg_handler.start()
     notify_start(dry_run, len(WALLETS_TO_TRACK))
 
