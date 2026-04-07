@@ -38,6 +38,7 @@ WALLETS_TO_TRACK = [
     "0x492442eab586f242b53bda933fd5de859c8a3782",  # #1  +$5,734,027
     "0x02227b8f5a9636e895607edd3185ed6ee5598ff7",  # #2  +$4,016,108  HorizonSplendidView
     "0xefbc5fec8d7b0acdc8911bdd9a98d6964308f9a2",  # #3  +$3,742,635  reachingthesky
+    "0x751a2b86cab503496efd325c8344e10159349ea1",  # #4
 ]
 
 BOT_CONFIG = {
