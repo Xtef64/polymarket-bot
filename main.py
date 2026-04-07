@@ -425,7 +425,6 @@ def run_cycle(
             print(f"  >> {len(sl_orders)} position(s) fermee(s) par stop-loss | cash libere ${freed:.2f}")
             lines = [f"<b>Stop-loss declenche</b> : {len(sl_orders)} position(s)"]
             for o in sl_orders:
-                pos_pct = (o.price / (o.price - (o.price - trader.portfolio.realized_pnl)) - 1) if o.price else 0
                 lines.append(f"  SELL {o.outcome} {o.shares:.2f}sh @ ${o.price:.3f}")
             lines.append(f"  Cash libere : ${freed:.2f} USDC")
             try:
