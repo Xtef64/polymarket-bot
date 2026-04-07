@@ -21,7 +21,7 @@ _session.headers.update({"Accept": "application/json", "User-Agent": "polymarket
 REFRESH_INTERVAL_H = 24
 
 # Parametres de selection
-N_WALLETS          = 4    # nombre de wallets a suivre
+N_WALLETS          = 5    # nombre de wallets a suivre
 MIN_PNL            = 0    # PnL minimum ($) pour etre eligible
 LEADERBOARD_POOL   = 50   # combien de wallets on scrute en haut du classement
 MIN_RECENT_TRADES  = 3    # trades recents minimum pour etre considere "actif"
