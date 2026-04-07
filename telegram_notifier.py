@@ -135,7 +135,9 @@ class TelegramCommandHandler:
             "/stop":      self._cmd_stop,
             "/start":     self._cmd_start,
             "/help":      self._cmd_help,
+            "/ping":      self._cmd_ping,
         }
+        print("  [Telegram] Poll loop demarre")
         while self._running and not self._stop_event.is_set():
             try:
                 r = _tg_session.get(
@@ -143,23 +145,29 @@ class TelegramCommandHandler:
                     params={"offset": self._offset, "timeout": 20},
                     timeout=25,
                 )
-                if r.status_code == 200:
-                    for upd in r.json().get("result", []):
-                        # Avance toujours l'offset — même pour les messages non-texte
-                        # (photo, sticker…) qui causaient une boucle infinie avant
-                        self._offset = upd["update_id"] + 1
-                        raw = upd.get("message", {}).get("text", "") or ""
-                        parts = raw.strip().lower().split()
-                        if not parts:
-                            continue
-                        fn = DISPATCH.get(parts[0])
-                        if fn:
-                            # Exécute la commande dans un thread dédié pour ne jamais
-                            # bloquer le poll loop (les fetch de prix peuvent prendre ~100s)
-                            threading.Thread(target=self._safe_run, args=(fn,),
-                                             daemon=True).start()
+                if r.status_code != 200:
+                    print(f"  [Telegram] getUpdates HTTP {r.status_code} — retry dans 5s")
+                    r.close()
+                    time.sleep(5)
+                    continue
+                updates = r.json().get("result", [])
                 r.close()
-            except Exception:
+                for upd in updates:
+                    self._offset = upd["update_id"] + 1
+                    raw = upd.get("message", {}).get("text", "") or ""
+                    parts = raw.strip().lower().split()
+                    if not parts:
+                        continue
+                    cmd = parts[0]
+                    print(f"  [Telegram] Commande recue : {cmd}")
+                    fn = DISPATCH.get(cmd)
+                    if fn:
+                        threading.Thread(target=self._safe_run, args=(fn,),
+                                         daemon=True).start()
+                    else:
+                        print(f"  [Telegram] Commande inconnue : {cmd}")
+            except Exception as e:
+                print(f"  [Telegram] Erreur poll : {e}")
                 time.sleep(5)
 
     def _safe_run(self, fn) -> None:
@@ -346,6 +354,9 @@ class TelegramCommandHandler:
             f"  🎯 Win rate latent: {win_rate:.1f}%\n"
             f"  🔢 Total ordres  : {len(p.order_log)}"
         )
+
+    def _cmd_ping(self) -> None:
+        _send("pong — bot actif")
 
     def _cmd_stop(self) -> None:
         _send("🛑 <b>Arrêt demandé via Telegram…</b>\nLe bot s'arrête après le cycle en cours.")
