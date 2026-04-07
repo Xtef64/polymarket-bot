@@ -102,40 +102,34 @@ def compute_pnl(positions: list[dict]) -> dict:
 
 
 class WalletTracker:
-    # Fetch positions toutes les N snapshots seulement (trades restent chaque cycle)
-    _POSITION_FETCH_EVERY = 5
+    """Détecte les trades par deux méthodes complémentaires :
+    1. Historique de trades (detect_new_trades) — marchés récents, souvent résolus
+    2. Changements de positions (detect_position_changes) — FIABLE : positions actives uniquement
+    """
 
     def __init__(self, wallets: list[str]):
         self.wallets = wallets
         self._last_trades: dict[str, list] = {}
-        self._cached_positions: dict[str, list] = {}   # wallet → positions (cache)
-        self._cached_pnl: dict[str, dict] = {}         # wallet → pnl (cache)
+        self._last_positions: dict[str, dict] = {}  # wallet → {market_key: position}
         self._snapshot_count = 0
 
-    def snapshot(self) -> dict:
-        """Prend un snapshot de tous les wallets suivis. Ne lève jamais d'exception.
-        Positions fetchées tous les _POSITION_FETCH_EVERY cycles pour économiser le réseau."""
-        self._snapshot_count += 1
-        fetch_positions = (self._snapshot_count % self._POSITION_FETCH_EVERY == 1)
-        if fetch_positions:
-            print(f"  [WalletTracker] Fetch positions (cycle {self._snapshot_count})")
-        else:
-            print(f"  [WalletTracker] Cache positions (prochain fetch dans "
-                  f"{self._POSITION_FETCH_EVERY - (self._snapshot_count % self._POSITION_FETCH_EVERY)} cycles)")
+    @staticmethod
+    def _pos_key(pos: dict) -> str:
+        """Clé unique pour une position : conditionId + outcome."""
+        cid = pos.get("conditionId") or pos.get("market") or pos.get("asset_id", "")
+        out = (pos.get("outcome") or "").upper()
+        return f"{cid}|{out}"
 
+    def snapshot(self) -> dict:
+        """Prend un snapshot COMPLET à chaque cycle.
+        Les positions sont fetchées à chaque cycle pour détecter les changements en temps réel."""
+        self._snapshot_count += 1
         data = {}
         for wallet in self.wallets:
             try:
-                if fetch_positions:
-                    positions = get_positions(wallet)
-                    pnl       = compute_pnl(positions)
-                    self._cached_positions[wallet] = positions
-                    self._cached_pnl[wallet]       = pnl
-                else:
-                    positions = self._cached_positions.get(wallet, [])
-                    pnl       = self._cached_pnl.get(wallet, {})
-
-                trades = get_trade_history(wallet, limit=20)
+                positions = get_positions(wallet)
+                trades    = get_trade_history(wallet, limit=20)
+                pnl       = compute_pnl(positions)
                 data[wallet] = {
                     "positions":     positions,
                     "recent_trades": trades,
@@ -145,9 +139,7 @@ class WalletTracker:
             except Exception as e:
                 print(f"  [WalletTracker] Erreur snapshot {wallet[:10]}... : {e}")
                 data[wallet] = {
-                    "positions": self._cached_positions.get(wallet, []),
-                    "recent_trades": [],
-                    "pnl":  self._cached_pnl.get(wallet, {}),
+                    "positions": [], "recent_trades": [], "pnl": {},
                     "timestamp": datetime.utcnow().isoformat(),
                 }
             time.sleep(0.3)
@@ -161,7 +153,7 @@ class WalletTracker:
         )
 
     def detect_new_trades(self, current_snapshot: dict) -> list[dict]:
-        """Détecte les trades apparus depuis le dernier snapshot."""
+        """Détecte les trades apparus depuis le dernier snapshot (méthode historique)."""
         new_trades = []
         try:
             for wallet, data in current_snapshot.items():
@@ -176,6 +168,100 @@ class WalletTracker:
         except Exception as e:
             print(f"  [WalletTracker] Erreur detect_new_trades : {e}")
         return new_trades
+
+    def detect_position_changes(self, current_snapshot: dict) -> list[dict]:
+        """Détecte les BUY/SELL en comparant les positions ouvertes actuelles vs précédentes.
+        MÉTHODE FIABLE : les positions ouvertes sont par définition sur des marchés actifs.
+        - Nouvelle position apparue  → signal BUY
+        - Position disparue          → signal SELL
+        - Position dont la taille a augmenté → signal BUY supplémentaire
+        """
+        signals = []
+        is_first_run = not self._last_positions  # premier cycle = initialisation seulement
+        try:
+            for wallet, data in current_snapshot.items():
+                cur_positions = data.get("positions", [])
+                # Index par clé unique
+                cur_map: dict[str, dict] = {}
+                for p in cur_positions:
+                    k = self._pos_key(p)
+                    if k:
+                        cur_map[k] = p
+
+                prev_map = self._last_positions.get(wallet, {})
+
+                # Nouvelles positions ou positions augmentées → BUY
+                for k, pos in cur_map.items():
+                    cid = pos.get("conditionId") or pos.get("market") or ""
+                    outcome = (pos.get("outcome") or "YES").upper()
+                    # Prix : on essaie plusieurs champs
+                    price = float(pos.get("curPrice") or pos.get("avgPrice") or 0.5)
+                    size_cur = float(pos.get("size") or pos.get("cashBalance") or 0)
+
+                    if k not in prev_map:
+                        # Nouvelle position
+                        signals.append({
+                            "side":        "BUY",
+                            "conditionId": cid,
+                            "outcome":     outcome,
+                            "price":       price,
+                            "size":        size_cur,
+                            "tokenId":     pos.get("asset_id") or pos.get("tokenId") or "",
+                            "market":      cid,
+                            "wallet":      wallet,
+                            "timestamp":   int(time.time()),
+                            "_source":     "position_change",
+                        })
+                    else:
+                        # Position existante — a-t-elle augmenté de taille ?
+                        size_prev = float(prev_map[k].get("size") or prev_map[k].get("cashBalance") or 0)
+                        if size_cur > size_prev * 1.05:  # +5% de tolérance
+                            signals.append({
+                                "side":        "BUY",
+                                "conditionId": cid,
+                                "outcome":     outcome,
+                                "price":       price,
+                                "size":        size_cur - size_prev,
+                                "tokenId":     pos.get("asset_id") or pos.get("tokenId") or "",
+                                "market":      cid,
+                                "wallet":      wallet,
+                                "timestamp":   int(time.time()),
+                                "_source":     "position_increase",
+                            })
+
+                # Positions disparues → SELL
+                for k, pos in prev_map.items():
+                    if k not in cur_map:
+                        cid = pos.get("conditionId") or pos.get("market") or ""
+                        outcome = (pos.get("outcome") or "YES").upper()
+                        price = float(pos.get("curPrice") or pos.get("avgPrice") or 0.5)
+                        signals.append({
+                            "side":        "SELL",
+                            "conditionId": cid,
+                            "outcome":     outcome,
+                            "price":       price,
+                            "size":        0,
+                            "tokenId":     pos.get("asset_id") or pos.get("tokenId") or "",
+                            "market":      cid,
+                            "wallet":      wallet,
+                            "timestamp":   int(time.time()),
+                            "_source":     "position_close",
+                        })
+
+                self._last_positions[wallet] = cur_map
+
+            if is_first_run:
+                print(f"  [PositionChange] Init baseline : {len(cur_map)} positions memorisees pour {wallet[:10]}...")
+
+            if signals:
+                buys  = sum(1 for s in signals if s["side"] == "BUY")
+                sells = sum(1 for s in signals if s["side"] == "SELL")
+                print(f"  [PositionChange] {buys} BUY + {sells} SELL detectes")
+        except Exception as e:
+            print(f"  [WalletTracker] Erreur detect_position_changes : {e}")
+
+        # Premier cycle = initialisation silencieuse, pas de signaux émis
+        return [] if is_first_run else signals
 
     def display_summary(self, snapshot: dict) -> None:
         try:

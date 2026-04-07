@@ -35,14 +35,14 @@ from telegram_notifier  import (
 
 # Top 3 du leaderboard Polymarket par profit (30j) — limité à 3 pour réduire l'empreinte mémoire
 WALLETS_TO_TRACK = [
-    "0x492442eab586f242b53bda933fd5de859c8a3782",  # #1  +$5,734,027
-    "0x02227b8f5a9636e895607edd3185ed6ee5598ff7",  # #2  +$4,016,108  HorizonSplendidView
-    "0xefbc5fec8d7b0acdc8911bdd9a98d6964308f9a2",  # #3  +$3,742,635  reachingthesky
-    "0x751a2b86cab503496efd325c8344e10159349ea1",  # #4
+    "0x492442eab586f242b53bda933fd5de859c8a3782",  # sports actif 07/04
+    "0xea9b517a08ccf962b85db123b36e775a87d02be5",  # actif 08/04, trades variés 0.27-1.00
+    "0x270fd599b1c57d04d893a3e799ed635254ca5e39",  # actif 08/04, prix 0.38-0.65
+    "0xb2755157774138346b3a19df1accf8912c8f97e5",  # actif 08/04, prix 0.36-0.74
 ]
 
 BOT_CONFIG = {
-    "poll_interval_sec":  60,
+    "poll_interval_sec":  30,   # réduit 60→30s : capture les trades sports avant résolution
     "top_markets_limit":  30,   # réduit de 50 → 30 pour économiser mémoire
     "top_markets_display": 10,
     "trade_size_usdc":    10.0,
@@ -440,10 +440,23 @@ def run_cycle(
         print(f"  [WARN] snapshot wallets impossible : {e} — cycle skipped")
         snapshot = {}
 
-    # 2. Nouveaux trades
+    # 2. Nouveaux trades — double méthode :
+    #    a) Historique de trades  (marchés récents, souvent déjà résolus)
+    #    b) Changements positions (marchés actifs, FIABLE)
     try:
-        new_trades = tracker.detect_new_trades(snapshot)
-        print(f"  >> {len(new_trades)} nouveau(x) trade(s) detecte(s)")
+        trades_from_history  = tracker.detect_new_trades(snapshot)
+        trades_from_positions = tracker.detect_position_changes(snapshot)
+        # Déduplique par conditionId+side+outcome
+        seen_keys = set()
+        new_trades = []
+        for t in trades_from_history + trades_from_positions:
+            k = f"{t.get('conditionId','')[:16]}|{t.get('side','')}|{t.get('outcome','')}"
+            if k not in seen_keys:
+                seen_keys.add(k)
+                new_trades.append(t)
+        src_h = len(trades_from_history)
+        src_p = len(trades_from_positions)
+        print(f"  >> {len(new_trades)} trade(s) detecte(s) (historique:{src_h} positions:{src_p})")
     except Exception as e:
         print(f"  [WARN] detect_new_trades : {e}")
         new_trades = []
@@ -521,11 +534,18 @@ def run_cycle(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Polymarket Copy Trading Bot")
-    parser.add_argument("--live", action="store_true", help="Active les ordres reels (DANGEREUX)")
+    parser.add_argument("--live",  action="store_true", help="Active les ordres reels (DANGEREUX)")
     parser.add_argument("--cycles", type=int, default=0, help="Nombre de cycles (0 = infini)")
+    parser.add_argument("--reset", action="store_true", help="Repart de zero (efface performance.json)")
     args = parser.parse_args()
 
     dry_run = not args.live
+
+    # Optionnel : reset complet du state (performance.json)
+    if args.reset or os.environ.get("BOT_RESET", "").lower() in ("1", "true", "yes"):
+        if os.path.exists(PERF_FILE):
+            os.remove(PERF_FILE)
+            print("  >> [RESET] performance.json supprime — nouveau depart avec $300")
 
     # ── Serveur dashboard démarré EN PREMIER pour passer le health check Railway ──
     dashboard_port = int(os.environ.get("PORT", 8765))

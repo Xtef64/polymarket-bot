@@ -18,13 +18,13 @@ _session.headers.update({"Accept": "application/json", "User-Agent": "polymarket
 DEFAULT_TRADE_SIZE_USDC = 10.0   # montant par trade en USDC (dry run)
 MAX_TRADE_SIZE_USDC     = 100.0
 MAX_OPEN_POSITIONS      = 20
-MIN_PRICE               = 0.05   # évite les moonshots à 2¢
-MAX_PRICE               = 0.95   # évite les marchés quasi-résolus
-MIN_MARKET_VOLUME       = 5_000  # liquidité minimale 24h
+MIN_PRICE               = 0.02   # élargi : accepte les positions à 2¢
+MAX_PRICE               = 0.98   # élargi : accepte jusqu'à 98¢ (wallet #4 trade à 0.96-0.999)
+MIN_MARKET_VOLUME       = 1_000  # réduit : 1k USD (was 5k, trop restrictif)
 CLOB_API                = "https://clob.polymarket.com"
 GAMMA_API               = "https://gamma-api.polymarket.com"
-STALE_POSITION_HOURS    = 24     # ferme les positions ouvertes depuis plus de X heures
-MAX_RESOLUTION_HOURS    = 24     # ignore les marchés qui se résolvent dans plus de 24h
+STALE_POSITION_HOURS    = 72     # élargi : 72h avant auto-close (was 24h, fermait trop vite)
+MAX_RESOLUTION_HOURS    = 720    # élargi : 30 jours (was 24h — bloquait 100% des trades)
 
 
 class SimulatedOrder:
@@ -177,17 +177,17 @@ class CopyTrader:
                 data = r.json()
                 r.close()
                 end_date = data[0].get("endDate") if isinstance(data, list) and data else None
-                self._end_date_cache[condition_id] = end_date
-                # Cap cache à 2000 entrées pour éviter OOM sur longue durée
-                if len(self._end_date_cache) > 2_000:
-                    oldest = next(iter(self._end_date_cache))
-                    del self._end_date_cache[oldest]
+                if end_date is not None:
+                    # Ne cache QUE les succès — les None sont retentés au prochain cycle
+                    self._end_date_cache[condition_id] = end_date
+                    if len(self._end_date_cache) > 2_000:
+                        oldest = next(iter(self._end_date_cache))
+                        del self._end_date_cache[oldest]
                 return end_date
             r.close()
         except Exception:
             pass
-        self._end_date_cache[condition_id] = None
-        return None
+        return None  # pas mis en cache → réessayé au prochain cycle
 
     def _is_valid_trade(self, trade: dict, market_info: Optional[dict] = None) -> tuple[bool, str]:
         """Retourne (valide, raison) pour un trade candidat."""
@@ -207,6 +207,10 @@ class CopyTrader:
             condition_id = trade.get("conditionId") or trade.get("market", "")
             if condition_id:
                 end_date_str = self._fetch_market_end_date(condition_id)
+        # Signaux issus de changements de positions : marché ACTIF par définition
+        if trade.get("_source") in ("position_change", "position_increase", "position_close"):
+            return True, "OK"
+
         if end_date_str is not None:
             try:
                 end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
@@ -218,8 +222,7 @@ class CopyTrader:
                     return False, f"résolution trop loin ({hours_left:.1f}h > {MAX_RESOLUTION_HOURS}h)"
             except (ValueError, TypeError):
                 pass
-        else:
-            return False, "date de résolution inconnue"
+        # Si date inconnue : on laisse passer (permissif)
 
         return True, "OK"
 
