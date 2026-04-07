@@ -55,7 +55,7 @@ BOT_CONFIG = {
 PERF_FILE    = os.path.join(os.path.dirname(__file__), "performance.json")
 _PERF_LOCK   = threading.Lock()   # protège perf dict + écriture fichier
 _price_cache: dict = {}           # token_id → prix courant (mis à jour par le refresher)
-MAX_CYCLES_IN_MEMORY  = 200        # cap anti-OOM : garde uniquement les N derniers cycles
+MAX_CYCLES_IN_MEMORY  = 50         # cap anti-OOM : réduit de 200→50 (positions × cycles = JSON géant)
 MAX_CONSECUTIVE_ERRORS = 10       # backoff max après erreurs répétées
 _consecutive_errors    = 0        # compteur d'erreurs consécutives (reset à chaque succès)
 
@@ -185,6 +185,13 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
     if len(data["cycles"]) > MAX_CYCLES_IN_MEMORY:
         data["cycles"] = data["cycles"][-MAX_CYCLES_IN_MEMORY:]
 
+    # CRITIQUE anti-OOM : open_positions et last_orders sont lourds (N positions × M cycles).
+    # On les garde uniquement dans le dernier cycle — les anciens n'en ont pas besoin.
+    for old_c in data["cycles"][:-1]:
+        old_c.pop("open_positions", None)
+        old_c.pop("last_orders", None)
+        old_c.pop("top_markets", None)
+
     # Résumé global mis à jour
     data["summary"] = {
         "last_update":      now,
@@ -204,11 +211,12 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
     }
 
     # Écriture atomique avec protection totale contre les erreurs I/O
+    # separators compacts : réduit la taille du JSON de ~40% vs indent=2
     try:
         with _PERF_LOCK:
             tmp = PERF_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                json.dump(data, f, separators=(",", ":"), ensure_ascii=False)
             os.replace(tmp, PERF_FILE)
         print(f"  >> performance.json mis a jour (cycle #{cycle}, net_worth=${portfolio.net_worth():.2f})")
     except Exception as e:
@@ -216,24 +224,39 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
 
 
 def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
-    """Restaure les positions et le cash depuis le dernier cycle sauvegardé."""
+    """Restaure les positions et le cash depuis le dernier cycle sauvegardé.
+    Cherche open_positions dans les cycles du plus récent au plus ancien
+    (les anciens cycles sont purgés de open_positions pour économiser la RAM)."""
     cycles = perf.get("cycles", [])
-    if not cycles:
-        return
-    last = cycles[-1]
-    port = last.get("portfolio", {})
-    positions = last.get("open_positions", [])
+    summary = perf.get("summary", {})
+
+    # Restaure les compteurs depuis le summary (toujours présent)
+    saved_cash = summary.get("cash_usdc", BOT_CONFIG["initial_balance"])
+    trader.portfolio.balance_usdc = saved_cash
+    trader.portfolio.realized_pnl = summary.get("realized_pnl", 0.0)
+    trader.portfolio.total_orders_count = summary.get("total_orders", 0)
+
+    # Cherche open_positions dans les cycles (du plus récent au plus ancien)
+    positions = []
+    for c in reversed(cycles):
+        if c.get("open_positions"):
+            positions = c["open_positions"]
+            port = c.get("portfolio", {})
+            # Priorité au cash du cycle qui contient les positions
+            saved_cash = port.get("cash_usdc", saved_cash)
+            trader.portfolio.balance_usdc = saved_cash
+            break
 
     if not positions:
+        print(f"  >> Portfolio restaure : 0 position(s), cash=${saved_cash:.2f}")
         return
 
-    # Restaure le cash et le compteur d'ordres
-    saved_cash = port.get("cash_usdc", BOT_CONFIG["initial_balance"])
-    trader.portfolio.balance_usdc = saved_cash
-    trader.portfolio.realized_pnl = port.get("realized_pnl", 0.0)
-    trader.portfolio.total_orders_count = perf.get("summary", {}).get("total_orders", 0)
+    # Limite à max_positions pour éviter l'accumulation entre restarts
+    max_p = trader.max_positions
+    if len(positions) > max_p:
+        print(f"  [WARN] {len(positions)} positions sauvegardées > max {max_p} — troncature")
+        positions = positions[-max_p:]  # garde les plus récentes
 
-    # Restaure les positions (avec opened_at si présent)
     restored = 0
     for p in positions:
         tid = p.get("token_id", "")
@@ -338,10 +361,10 @@ def _do_price_refresh(trader: "CopyTrader", perf: dict) -> None:
         perf["summary"]["unrealized_pnl"]    = round(unrealized_total, 4)
         perf["summary"]["prices_updated_at"] = now
 
-        # 3. Sauvegarde atomique
+        # 3. Sauvegarde atomique (séparateurs compacts = ~40% plus petit)
         tmp = PERF_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(perf, f, indent=2, ensure_ascii=False)
+            json.dump(perf, f, separators=(",", ":"), ensure_ascii=False)
         os.replace(tmp, PERF_FILE)
 
     print(
