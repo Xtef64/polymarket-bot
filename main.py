@@ -417,22 +417,22 @@ def run_cycle(
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[Cycle #{cycle}] {ts} UTC")
 
-    # 0a. Stop-loss automatique (-20%) — avant auto-close pour libérer le cash en priorité
-    try:
-        sl_orders = trader.auto_stop_loss(price_cache=_price_cache)
-        if sl_orders:
-            freed = sum(o.price * o.shares for o in sl_orders)
-            print(f"  >> {len(sl_orders)} position(s) fermee(s) par stop-loss | cash libere ${freed:.2f}")
-            lines = [f"<b>Stop-loss declenche</b> : {len(sl_orders)} position(s)"]
-            for o in sl_orders:
-                lines.append(f"  SELL {o.outcome} {o.shares:.2f}sh @ ${o.price:.3f}")
-            lines.append(f"  Cash libere : ${freed:.2f} USDC")
-            try:
-                tg_send("\n".join(lines))
-            except Exception:
-                pass
-    except Exception as e:
-        print(f"  [WARN] auto_stop_loss : {e}")
+    # 0a. Stop-loss automatique (-20%) — DESACTIVE temporairement (réactiver quand bot stable)
+    # try:
+    #     sl_orders = trader.auto_stop_loss(price_cache=_price_cache)
+    #     if sl_orders:
+    #         freed = sum(o.price * o.shares for o in sl_orders)
+    #         print(f"  >> {len(sl_orders)} position(s) fermee(s) par stop-loss | cash libere ${freed:.2f}")
+    #         lines = [f"<b>Stop-loss declenche</b> : {len(sl_orders)} position(s)"]
+    #         for o in sl_orders:
+    #             lines.append(f"  SELL {o.outcome} {o.shares:.2f}sh @ ${o.price:.3f}")
+    #         lines.append(f"  Cash libere : ${freed:.2f} USDC")
+    #         try:
+    #             tg_send("\n".join(lines))
+    #         except Exception:
+    #             pass
+    # except Exception as e:
+    #     print(f"  [WARN] auto_stop_loss : {e}")
 
     # 0b. Fermeture automatique des positions périmées (>72h)
     try:
