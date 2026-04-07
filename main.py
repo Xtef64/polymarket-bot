@@ -22,23 +22,22 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from wallet_tracker     import WalletTracker
-from market_analyzer    import MarketAnalyzer
-from copytrader         import CopyTrader
-from serve              import start_server_thread
-from telegram_notifier  import (
+from wallet_tracker       import WalletTracker
+from market_analyzer      import MarketAnalyzer
+from copytrader           import CopyTrader
+from serve                import start_server_thread
+from leaderboard_selector import leaderboard_refresh_loop, select_best_wallets
+from telegram_notifier    import (
     TelegramCommandHandler, notify_start, notify_stop,
     notify_trade, notify_cycle, _send as tg_send,
 )
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-# Top 3 du leaderboard Polymarket par profit (30j) — limité à 3 pour réduire l'empreinte mémoire
+# Wallets de démarrage — remplacés automatiquement par le leaderboard_selector toutes les 24h.
+# Si vides au démarrage, le sélecteur automatique les choisit immédiatement.
 WALLETS_TO_TRACK = [
-    "0x492442eab586f242b53bda933fd5de859c8a3782",  # sports actif 07/04
-    "0xea9b517a08ccf962b85db123b36e775a87d02be5",  # actif 08/04, trades variés 0.27-1.00
-    "0x270fd599b1c57d04d893a3e799ed635254ca5e39",  # actif 08/04, prix 0.38-0.65
-    "0xb2755157774138346b3a19df1accf8912c8f97e5",  # actif 08/04, prix 0.36-0.74
+    "0x492442eab586f242b53bda933fd5de859c8a3782",  # fallback statique (écrasé par auto-select)
 ]
 
 BOT_CONFIG = {
@@ -391,14 +390,15 @@ def refresh_position_prices(trader: "CopyTrader", perf: dict,
         stop_event.wait(timeout=interval)
 
 
-def banner(dry_run: bool) -> None:
+def banner(dry_run: bool, n_wallets: int = 0) -> None:
     mode = "DRY RUN (simulation)" if dry_run else "LIVE -- ordres REELS"
     print("=" * 60)
     print("  POLYMARKET BOT")
-    print(f"  Mode    : {mode}")
-    print(f"  Wallets : {len(WALLETS_TO_TRACK)} suivis")
-    print(f"  Cycle   : toutes les {BOT_CONFIG['poll_interval_sec']}s")
-    print(f"  Perf    : {PERF_FILE}")
+    print(f"  Mode        : {mode}")
+    print(f"  Wallets     : {n_wallets} suivis (auto-selection 24h)")
+    print(f"  Cycle       : toutes les {BOT_CONFIG['poll_interval_sec']}s")
+    print(f"  Leaderboard : rafraichi toutes les 24h")
+    print(f"  Perf        : {PERF_FILE}")
     print("=" * 60)
 
 
@@ -417,7 +417,25 @@ def run_cycle(
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[Cycle #{cycle}] {ts} UTC")
 
-    # 0. Fermeture automatique des positions périmées (>24h)
+    # 0a. Stop-loss automatique (-20%) — avant auto-close pour libérer le cash en priorité
+    try:
+        sl_orders = trader.auto_stop_loss(price_cache=_price_cache)
+        if sl_orders:
+            freed = sum(o.price * o.shares for o in sl_orders)
+            print(f"  >> {len(sl_orders)} position(s) fermee(s) par stop-loss | cash libere ${freed:.2f}")
+            lines = [f"<b>Stop-loss declenche</b> : {len(sl_orders)} position(s)"]
+            for o in sl_orders:
+                pos_pct = (o.price / (o.price - (o.price - trader.portfolio.realized_pnl)) - 1) if o.price else 0
+                lines.append(f"  SELL {o.outcome} {o.shares:.2f}sh @ ${o.price:.3f}")
+            lines.append(f"  Cash libere : ${freed:.2f} USDC")
+            try:
+                tg_send("\n".join(lines))
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"  [WARN] auto_stop_loss : {e}")
+
+    # 0b. Fermeture automatique des positions périmées (>72h)
     try:
         closed_orders = trader.auto_close_stale_positions()
         if closed_orders:
@@ -553,7 +571,7 @@ def main() -> None:
     public_url = os.environ.get("PUBLIC_URL", f"http://localhost:{dashboard_port}")
     print(f"  >> Dashboard : {public_url}/dashboard.html")
 
-    banner(dry_run)
+    banner(dry_run, n_wallets=len(tracker.wallets))
 
     if not dry_run:
         confirm = input("\n  ATTENTION : mode LIVE active. Confirmer ? (yes/no) : ")
@@ -603,7 +621,17 @@ def main() -> None:
 
     tg_handler = TelegramCommandHandler(trader, stop_event, started_at)
     tg_handler.start()
-    notify_start(dry_run, len(WALLETS_TO_TRACK))
+    notify_start(dry_run, len(tracker.wallets))
+
+    # Thread de sélection automatique des wallets (toutes les 24h)
+    # Démarré après tg_handler pour pouvoir notifier Telegram lors des changements
+    leaderboard_thread = threading.Thread(
+        target=leaderboard_refresh_loop,
+        args=(tracker, perf, stop_event, 24, tg_send),
+        daemon=True,
+        name="leaderboard-selector",
+    )
+    leaderboard_thread.start()
 
     global _consecutive_errors
 
