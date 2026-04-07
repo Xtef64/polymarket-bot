@@ -25,7 +25,6 @@ CLOB_API                = "https://clob.polymarket.com"
 GAMMA_API               = "https://gamma-api.polymarket.com"
 STALE_POSITION_HOURS    = 72     # élargi : 72h avant auto-close (was 24h, fermait trop vite)
 MAX_RESOLUTION_HOURS    = 720    # élargi : 30 jours (was 24h — bloquait 100% des trades)
-STOP_LOSS_PCT           = 0.20   # stop-loss à -20% du prix d'entrée
 
 
 class SimulatedOrder:
@@ -371,60 +370,6 @@ class CopyTrader:
                 closed.append(order)
             time.sleep(0.1)
 
-        return closed
-
-    def auto_stop_loss(
-        self,
-        max_loss_pct: float = STOP_LOSS_PCT,
-        price_cache: Optional[dict] = None,
-    ) -> list[SimulatedOrder]:
-        """
-        Ferme automatiquement toute position dont la perte latente dépasse max_loss_pct.
-        Nécessite un price_cache {token_id: prix_actuel} fourni par le price-refresher.
-        Les positions sans prix connu sont ignorées (pas de fermeture à l'aveugle).
-        Retourne la liste des ordres de fermeture exécutés.
-        """
-        if not price_cache:
-            return []
-
-        closed = []
-        for token_id, pos in list(self.portfolio.positions.items()):
-            cur_price = price_cache.get(token_id)
-            if cur_price is None:
-                continue  # prix inconnu — on ne ferme pas à l'aveugle
-
-            avg_cost = pos["avg_cost"]
-            if avg_cost <= 0:
-                continue
-
-            loss_pct = (cur_price - avg_cost) / avg_cost  # négatif si perte
-            if loss_pct > -max_loss_pct:
-                continue  # pas encore en stop-loss
-
-            pnl = (cur_price - avg_cost) * pos["shares"]
-            print(
-                f"  [StopLoss] SELL {pos['outcome']} {pos['shares']:.2f}sh "
-                f"@ ${cur_price:.3f} (entree ${avg_cost:.3f}, "
-                f"perte {loss_pct*100:.1f}% = ${pnl:.2f}) | {token_id[:12]}..."
-            )
-
-            order = SimulatedOrder(
-                market_id=pos.get("market_id", ""),
-                token_id=token_id,
-                outcome=pos["outcome"],
-                price=cur_price,
-                size_usdc=pos["total_cost"],
-                side="SELL",
-                wallet_source="stop-loss",
-            )
-            order.shares = pos["shares"]
-
-            if self.portfolio.apply_order(order):
-                closed.append(order)
-            time.sleep(0.05)
-
-        if closed:
-            print(f"  [StopLoss] {len(closed)} position(s) fermee(s) par stop-loss (-{max_loss_pct*100:.0f}%)")
         return closed
 
     def display_log(self, last_n: int = 10) -> None:

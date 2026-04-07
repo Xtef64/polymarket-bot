@@ -461,7 +461,7 @@ function renderPositions(cycles) {
       <td class="mono">$${Number(p.avg_cost).toFixed(3)}</td>
       <td class="mono">${fmt$(p.total_cost)}</td>
       <td>${priceCell}</td>
-      <td class="mono ${gainCls}">${pnlCell}${pnlPct!=null&&pnlPct<=-20?'<span title="Stop-loss imminent" style="margin-left:5px;font-size:10px;background:#2e1a1a;color:#f85149;border-radius:3px;padding:1px 5px;">SL</span>':''}</td>
+      <td class="mono ${gainCls}">${pnlCell}</td>
       <td>${mid}</td>
     </tr>`;
   }).join('');
