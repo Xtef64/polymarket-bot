@@ -24,8 +24,7 @@ MIN_MARKET_VOLUME       = 1_000  # réduit : 1k USD (was 5k, trop restrictif)
 CLOB_API                = "https://clob.polymarket.com"
 GAMMA_API               = "https://gamma-api.polymarket.com"
 STALE_POSITION_HOURS    = 72     # élargi : 72h avant auto-close (was 24h, fermait trop vite)
-MAX_RESOLUTION_HOURS    = 72     # filtre : ignore les marchés se résolvant dans plus de 3 jours
-MAX_MARKET_EXPOSURE_PCT = 0.70   # max 70% du capital total sur un même marché
+MAX_RESOLUTION_HOURS    = 720    # 30 jours max (permissif)
 
 
 class SimulatedOrder:
@@ -224,28 +223,11 @@ class CopyTrader:
             if vol < MIN_MARKET_VOLUME:
                 return False, f"volume trop faible (${vol:,.0f})"
 
-        # Filtre résolution : marché doit se résoudre dans les 3 prochaines heures
         end_date_str = market_info.get("end_date") if market_info else None
         if end_date_str is None:
             condition_id = trade.get("conditionId") or trade.get("market", "")
             if condition_id:
                 end_date_str = self._fetch_market_end_date(condition_id)
-        # Limite d'exposition par marché : max 70% du capital total sur un même marché
-        if (trade.get("side") or "BUY").upper() == "BUY":
-            market_id = trade.get("conditionId") or trade.get("market", "")
-            if market_id:
-                market_exposure = sum(
-                    p["total_cost"]
-                    for p in self.portfolio.positions.values()
-                    if p.get("market_id") == market_id
-                )
-                total_capital = self.portfolio.net_worth()
-                if total_capital > 0 and (market_exposure + self.trade_size_usdc) / total_capital > MAX_MARKET_EXPOSURE_PCT:
-                    return False, (
-                        f"exposition marché trop élevée "
-                        f"(${market_exposure + self.trade_size_usdc:.2f} / ${total_capital:.2f} "
-                        f"= {(market_exposure + self.trade_size_usdc) / total_capital * 100:.0f}% > {MAX_MARKET_EXPOSURE_PCT*100:.0f}%)"
-                    )
 
         if end_date_str is not None:
             try:
