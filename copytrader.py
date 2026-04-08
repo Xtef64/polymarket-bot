@@ -53,6 +53,12 @@ class SimulatedOrder:
         self.wallet_source = wallet_source
         self.timestamp    = datetime.now(timezone.utc).isoformat()
         self.status       = "FILLED_SIM"
+        # Enriched for SELL orders — populated by PortfolioSimulator.apply_order
+        self.entry_price:      Optional[float] = None
+        self.realized_pnl:     Optional[float] = None
+        self.realized_pnl_pct: Optional[float] = None
+        self.duration_sec:     Optional[int]   = None
+        self.opened_at:        Optional[str]   = None
 
     def __repr__(self) -> str:
         return (
@@ -100,9 +106,25 @@ class PortfolioSimulator:
             if not pos or pos["shares"] < order.shares:
                 print(f"  [Portfolio] Pas assez de shares pour vendre")
                 return False
-            proceeds = order.shares * order.price
+            proceeds   = order.shares * order.price
+            entry_cost = order.shares * pos["avg_cost"]
+            realized   = proceeds - entry_cost
             self.balance_usdc += proceeds
-            self.realized_pnl += proceeds - (order.shares * pos["avg_cost"])
+            self.realized_pnl += realized
+            # Enrichit l'ordre SELL avec les données de la trade réalisée
+            order.entry_price  = round(pos["avg_cost"], 6)
+            order.realized_pnl = round(realized, 4)
+            if entry_cost > 0:
+                order.realized_pnl_pct = round(realized / entry_cost * 100, 2)
+            order.opened_at = pos.get("opened_at")
+            if order.opened_at:
+                try:
+                    opened_at_dt = datetime.fromisoformat(order.opened_at)
+                    order.duration_sec = int(
+                        (datetime.now(timezone.utc) - opened_at_dt).total_seconds()
+                    )
+                except (ValueError, TypeError):
+                    pass
             pos["shares"] = round(pos["shares"] - order.shares, 4)
             if pos["shares"] <= 0:
                 del self.positions[order.token_id]

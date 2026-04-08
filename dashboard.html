@@ -139,10 +139,10 @@
   </div>
 </div>
 
-<!-- ── PnL chart + Win rate ── -->
+<!-- ── PnL réalisé cumulatif + Win rate ── -->
 <div class="g62">
   <div class="card">
-    <div class="card-title">PnL réalisé &amp; Rendement par cycle</div>
+    <div class="card-title">PnL réalisé cumulatif <span id="pnl-chart-count" style="color:var(--muted);font-size:11px;font-weight:400;margin-left:6px"></span></div>
     <div class="chart-wrap" style="height:190px;">
       <canvas id="chart-pnl"></canvas>
     </div>
@@ -198,16 +198,26 @@
   </div>
 </div>
 
-<!-- ── Tous les ordres simulés ── -->
-<div class="stitle">Tous les ordres simulés <span id="orders-count" style="color:var(--blue);font-size:11px;font-weight:600;margin-left:4px;"></span></div>
+<!-- ── Historique des transactions ── -->
+<div class="stitle">
+  Historique des transactions
+  <span id="txn-count" style="color:var(--blue);font-size:11px;font-weight:600;margin-left:4px"></span>
+  <span style="margin-left:auto;display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:11px;">
+    <label for="txn-wallet-filter" style="color:var(--muted)">Wallet :</label>
+    <select id="txn-wallet-filter" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:11px;cursor:pointer;">
+      <option value="">Tous</option>
+    </select>
+  </span>
+</div>
 <div class="card">
   <div class="tbl-wrap lg">
     <table>
       <thead><tr>
-        <th>Heure</th><th>Ordre</th><th>Outcome</th><th>Prix</th>
-        <th>Taille</th><th>Shares</th><th>Marché</th><th>Source wallet</th>
+        <th>Date / Heure</th><th>Ordre</th><th>Outcome</th><th>Marché</th>
+        <th>Prix entrée</th><th>Prix sortie</th><th>PnL $</th><th>PnL %</th>
+        <th>Durée</th><th>Wallet</th>
       </tr></thead>
-      <tbody id="orders-tbody"></tbody>
+      <tbody id="txn-tbody"></tbody>
     </table>
   </div>
 </div>
@@ -295,30 +305,78 @@ function drawPortfolioChart(cycles) {
   });
 }
 
-// ── PnL chart ─────────────────────────────────────────────────────────────────
-function drawPnlChart(cycles) {
-  if (!cycles.length) return;
-  const labels = cycles.map(c=>`#${c.cycle}`);
-  const retPct = cycles.map(c=>c.portfolio.return_pct);
-  const orders = cycles.map(c=>c.orders_executed);
-  getOrCreate('chart-pnl', 'bar', {
+// ── PnL réalisé cumulatif (par transaction SELL) ──────────────────────────────
+function drawPnlChart(tradeHistory) {
+  const sells = (tradeHistory || [])
+    .filter(t => t.side === 'SELL' && t.realized_pnl != null)
+    .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+  const lbl = document.getElementById('pnl-chart-count');
+  if (lbl) lbl.textContent = sells.length ? `· ${sells.length} trade${sells.length>1?'s':''} réalisé${sells.length>1?'s':''}` : '· en attente de transactions';
+
+  if (!sells.length) {
+    // Efface le canvas précédent et affiche un message
+    if (CHARTS['chart-pnl']) { CHARTS['chart-pnl'].destroy(); delete CHARTS['chart-pnl']; }
+    const ctx = document.getElementById('chart-pnl').getContext('2d');
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.fillStyle = '#8b949e'; ctx.font = '13px Segoe UI, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Aucune position fermée pour l\'instant', ctx.canvas.width/2, ctx.canvas.height/2);
+    return;
+  }
+
+  let cum = 0;
+  const labels = [], data = [], ptColors = [], ptRadii = [], sellRefs = [];
+  sells.forEach(t => {
+    cum += t.realized_pnl;
+    const dt = new Date(t.ts);
+    labels.push(dt.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'}) + ' ' +
+                dt.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}));
+    data.push(+cum.toFixed(4));
+    ptColors.push(cum >= 0 ? '#3fb950' : '#f85149');
+    ptRadii.push(sells.length > 60 ? 2 : 4);
+    sellRefs.push(t);
+  });
+
+  getOrCreate('chart-pnl', 'line', {
     labels,
-    datasets:[
-      { label:'Ordres exécutés', data:orders, backgroundColor:'rgba(88,166,255,0.25)', borderColor:'#58a6ff', borderWidth:1, borderRadius:3, yAxisID:'y2', order:2 },
-      { type:'line', label:'Rendement %', data:retPct, borderColor:'#3fb950', backgroundColor:'transparent', pointRadius:retPct.length>20?0:3, borderWidth:2, tension:0.3, yAxisID:'y', order:1 },
-    ]
+    datasets: [{
+      label: 'PnL cumulatif ($)',
+      data,
+      borderColor: data[data.length-1] >= 0 ? '#3fb950' : '#f85149',
+      backgroundColor: data[data.length-1] >= 0 ? 'rgba(63,185,80,0.07)' : 'rgba(248,81,73,0.07)',
+      fill: true, tension: 0.25,
+      pointRadius: ptRadii, pointHoverRadius: 6,
+      pointBackgroundColor: ptColors, pointBorderColor: ptColors,
+      borderWidth: 2,
+    }]
   }, {
-    responsive:true, maintainAspectRatio:false,
-    interaction:{ mode:'index', intersect:false },
-    plugins:{
-      legend:{ position:'top', labels:{ usePointStyle:true, boxWidth:8, padding:14, font:{size:11} } },
-      tooltip:{ backgroundColor:'#1c2230', borderColor:'#30363d', borderWidth:1, padding:10,
-        callbacks:{ label: ctx => ` ${ctx.dataset.label}: ${ctx.datasetIndex===0?ctx.parsed.y+' ordres':fmtPct(ctx.parsed.y)}` } }
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 8, padding: 14, font: { size: 11 } } },
+      tooltip: {
+        backgroundColor: '#1c2230', borderColor: '#30363d', borderWidth: 1, padding: 10,
+        callbacks: {
+          label: ctx => ` Cumulatif : ${fmt$(ctx.parsed.y)}`,
+          afterLabel: ctx => {
+            const t = sellRefs[ctx.dataIndex];
+            if (!t) return [];
+            const pnlLine = ` Trade : ${t.realized_pnl>=0?'+':''}${fmt$(t.realized_pnl)}` +
+              (t.realized_pnl_pct != null ? ` (${t.realized_pnl_pct>=0?'+':''}${t.realized_pnl_pct.toFixed(1)}%)` : '');
+            const durLine = t.duration_sec != null ? ` Durée : ${fmtDur(t.duration_sec)}` : '';
+            const srcLine = ` ${t.outcome} | ${walletInfo(t.source).label}`;
+            return [pnlLine, durLine, srcLine].filter(Boolean);
+          }
+        }
+      }
     },
-    scales:{
-      x:{ grid:{color:'#21262d'}, ticks:{font:{size:10}} },
-      y:{ position:'left',  grid:{color:'#21262d'}, ticks:{font:{size:10}, callback:v=>`${v>=0?'+':''}${v.toFixed(2)}%`} },
-      y2:{ position:'right', grid:{display:false}, ticks:{font:{size:10}, stepSize:1}, title:{display:true,text:'Ordres',font:{size:10},color:'#58a6ff'} },
+    scales: {
+      x: { grid: { color: '#21262d' }, ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+      y: {
+        grid: { color: '#21262d' },
+        ticks: { font: { size: 10 }, callback: v => `${v>=0?'+':''}$${Number(v).toFixed(2)}` }
+      }
     }
   });
 }
@@ -536,29 +594,89 @@ function renderLeaderboard(d) {
   }
 }
 
-// ── All orders (tous, pas de limite) ─────────────────────────────────────────
-function renderOrders(cycles) {
-  const seen = new Set(), orders = [];
-  [...cycles].reverse().forEach(c => {
-    (c.last_orders||[]).forEach(o => {
-      if (!seen.has(o.order_id)) { seen.add(o.order_id); orders.push(o); }
+// ── Formateur de durée ────────────────────────────────────────────────────────
+function fmtDur(sec) {
+  if (sec == null) return '—';
+  if (sec < 60)    return `${sec}s`;
+  if (sec < 3600)  return `${Math.floor(sec/60)}m ${sec%60}s`;
+  if (sec < 86400) return `${Math.floor(sec/3600)}h ${Math.floor((sec%3600)/60)}m`;
+  return `${Math.floor(sec/86400)}j ${Math.floor((sec%86400)/3600)}h`;
+}
+
+// ── Historique des transactions ───────────────────────────────────────────────
+function renderTransactions(tradeHistory, d) {
+  // Lookup question des marchés depuis top_markets de tous les cycles
+  const mqMap = {};
+  (d.cycles||[]).forEach(c => {
+    (c.top_markets||[]).forEach(m => {
+      if (m.conditionId && m.question) mqMap[m.conditionId] = m.question;
     });
   });
-  orders.sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
-  document.getElementById('orders-count').textContent = `${orders.length} total`;
-  const tbody = document.getElementById('orders-tbody');
-  if (!orders.length) { tbody.innerHTML=`<tr><td colspan="8" class="empty">Aucun ordre</td></tr>`; return; }
-  tbody.innerHTML = orders.map(o => {
-    const ts   = new Date(o.timestamp).toLocaleTimeString('fr-FR');
-    const info = walletInfo(o.source);
+
+  const history = (tradeHistory||[]).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+
+  // Filtres wallet : construit options en préservant la sélection courante
+  const filterEl = document.getElementById('txn-wallet-filter');
+  const saved    = filterEl.value;
+  const wallets  = [...new Set(history.map(t=>t.source).filter(Boolean))];
+  filterEl.innerHTML = '<option value="">Tous</option>'
+    + wallets.map(w => {
+        const info = walletInfo(w);
+        return `<option value="${w}"${w===saved?' selected':''}>${info.label}</option>`;
+      }).join('');
+
+  const filtered = saved ? history.filter(t=>t.source===saved) : history;
+  document.getElementById('txn-count').textContent = `${filtered.length} transaction${filtered.length!==1?'s':''}`;
+
+  const tbody = document.getElementById('txn-tbody');
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="empty">Aucune transaction — les données apparaîtront après la première fermeture de position</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(t => {
+    const dt    = new Date(t.ts);
+    const dtStr = dt.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit',year:'2-digit'})
+                + ' ' + dt.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const info  = walletInfo(t.source);
+    const isSell = t.side === 'SELL';
+
+    // Nom du marché (lookup ou ID court)
+    const mq = mqMap[t.market_id] || '';
+    const marketCell = mq
+      ? `<span title="${t.market_id}" style="font-size:11px;cursor:default">${mq.length>35?mq.slice(0,34)+'…':mq}</span>`
+      : `<span class="mono" style="color:var(--muted);font-size:10px" title="${t.market_id}">${short(t.market_id)}</span>`;
+
+    // Prix entrée / sortie
+    const entryPrice = isSell ? t.entry_price : t.price;
+    const exitPrice  = isSell ? t.price : null;
+    const entryCell  = entryPrice != null
+      ? `<span class="mono">$${Number(entryPrice).toFixed(4)}</span>` : '—';
+    const exitCell   = exitPrice  != null
+      ? `<span class="mono">$${Number(exitPrice).toFixed(4)}</span>`
+      : `<span style="color:var(--muted);font-size:11px">—</span>`;
+
+    // PnL
+    const pnl    = t.realized_pnl;
+    const pnlPct = t.realized_pnl_pct;
+    const pCls   = pnl != null ? (pnl>=0?'positive':'negative') : 'neutral';
+    const pnlCell = pnl != null
+      ? `<span class="mono ${pCls}" style="font-weight:700">${pnl>=0?'+':''}${fmt$(pnl)}</span>`
+      : `<span style="color:var(--muted)">—</span>`;
+    const pnlPctCell = pnlPct != null
+      ? `<span class="mono ${pCls}">${pnlPct>=0?'+':''}${pnlPct.toFixed(1)}%</span>`
+      : `<span style="color:var(--muted)">—</span>`;
+
     return `<tr>
-      <td class="mono" style="color:var(--muted);font-size:11px">${ts}</td>
-      <td><span class="pill ${o.side==='BUY'?'pill-buy':'pill-sell'}">${o.side}</span></td>
-      <td><span class="${outcomeClass(o.outcome)}">${o.outcome}</span></td>
-      <td class="mono" style="font-weight:600">$${Number(o.price).toFixed(3)}</td>
-      <td class="mono" style="color:var(--muted)">${fmt$(o.size_usdc)}</td>
-      <td class="mono" style="color:var(--muted)">${Number(o.shares).toFixed(2)}</td>
-      <td class="mono" style="font-size:10px;color:var(--muted)">${short(o.market_id)}</td>
+      <td class="mono" style="color:var(--muted);font-size:11px;white-space:nowrap">${dtStr}</td>
+      <td><span class="pill ${t.side==='BUY'?'pill-buy':'pill-sell'}">${t.side}</span></td>
+      <td><span class="${outcomeClass(t.outcome)}">${t.outcome}</span></td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${marketCell}</td>
+      <td>${entryCell}</td>
+      <td>${exitCell}</td>
+      <td>${pnlCell}</td>
+      <td>${pnlPctCell}</td>
+      <td class="mono" style="font-size:11px;color:var(--muted);white-space:nowrap">${isSell?fmtDur(t.duration_sec):'—'}</td>
       <td><span style="color:${info.color};font-size:11px;font-family:monospace;font-weight:600">${info.label}</span></td>
     </tr>`;
   }).join('');
@@ -616,22 +734,27 @@ async function loadAndRender() {
     const d=await res.json();
     errbox.style.display='none';
     const { cycles, meta } = d;
-    const wallets=meta.wallets||[];
+    const wallets = meta.wallets||[];
+    window._lastData = d;
     renderKPIs(d);
     drawPortfolioChart(cycles);
-    drawPnlChart(cycles);
+    drawPnlChart(d.trade_history||[]);
     renderLeaderboard(d);
     renderWinRate(cycles, wallets);
     renderWalletsTable(cycles, wallets);
     renderPositions(cycles);
     renderMarkets(cycles);
-    renderOrders(cycles);
+    renderTransactions(d.trade_history||[], d);
   } catch(e) {
     errbox.style.display='block';
     errbox.textContent=`Impossible de charger performance.json : ${e.message}`;
   }
   startCountdown();
 }
+
+document.getElementById('txn-wallet-filter').addEventListener('change', () => {
+  if (window._lastData) renderTransactions(window._lastData.trade_history||[], window._lastData);
+});
 
 loadAndRender();
 setInterval(loadAndRender, REFRESH_MS);

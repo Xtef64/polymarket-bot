@@ -93,7 +93,7 @@ def load_perf() -> dict:
 
 def save_perf(data: dict, trader: "CopyTrader", cycle: int,
               snapshot: dict, new_trades: int, executed: int,
-              top_markets: list) -> None:
+              all_executed: int, top_markets: list) -> None:
     """Construit et sauvegarde l'entrée de performance du cycle courant."""
     now = datetime.now(timezone.utc).isoformat()
     portfolio = trader.portfolio
@@ -108,15 +108,16 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
             "volume": pnl.get("volume", None),
         }
 
-    # Top 10 marchés
+    # Top 5 marchés (inclut conditionId pour le lookup dashboard)
     top5 = [
         {
-            "question":   m["question"],
-            "yes_price":  m["yes_price"],
-            "volume_24h": m["volume_24h"],
-            "score":      m["score"],
+            "conditionId": m.get("conditionId", ""),
+            "question":    m["question"],
+            "yes_price":   m["yes_price"],
+            "volume_24h":  m["volume_24h"],
+            "score":       m["score"],
         }
-        for m in top_markets[:5]  # réduit de 10 → 5 pour économiser mémoire
+        for m in top_markets[:5]
     ]
 
     # Positions ouvertes — inclut le prix courant depuis _price_cache si disponible
@@ -142,21 +143,49 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
             "pnl_pct":       pnl_pct,
         })
 
-    # Derniers ordres exécutés
+    # Derniers ordres exécutés (tous : copie + stop-loss + auto-close)
     last_orders = [
         {
-            "order_id":  o.order_id,
-            "side":      o.side,
-            "outcome":   o.outcome,
-            "price":     o.price,
-            "size_usdc": o.size_usdc,
-            "shares":    o.shares,
-            "market_id": o.market_id,
-            "source":    o.wallet_source[:20] if o.wallet_source else "",
-            "timestamp": o.timestamp,
+            "order_id":         o.order_id,
+            "side":             o.side,
+            "outcome":          o.outcome,
+            "price":            o.price,
+            "size_usdc":        o.size_usdc,
+            "shares":           o.shares,
+            "market_id":        o.market_id,
+            "source":           o.wallet_source[:20] if o.wallet_source else "",
+            "timestamp":        o.timestamp,
+            "entry_price":      getattr(o, "entry_price",      None),
+            "realized_pnl":     getattr(o, "realized_pnl",     None),
+            "realized_pnl_pct": getattr(o, "realized_pnl_pct", None),
+            "duration_sec":     getattr(o, "duration_sec",     None),
         }
-        for o in portfolio.order_log[-executed:] if executed > 0
+        for o in portfolio.order_log[-all_executed:] if all_executed > 0
     ]
+
+    # Historique cumulatif des trades (capped 500) — alimente le graphique PnL
+    trade_history = data.setdefault("trade_history", [])
+    existing_ids  = {t.get("order_id") for t in trade_history}
+    for o in (portfolio.order_log[-all_executed:] if all_executed > 0 else []):
+        if o.order_id in existing_ids:
+            continue
+        trade_history.append({
+            "order_id":         o.order_id,
+            "ts":               o.timestamp,
+            "market_id":        o.market_id[:32] if o.market_id else "",
+            "outcome":          o.outcome,
+            "source":           o.wallet_source[:20] if o.wallet_source else "",
+            "side":             o.side,
+            "price":            o.price,
+            "shares":           round(o.shares, 4),
+            "entry_price":      getattr(o, "entry_price",      None),
+            "realized_pnl":     getattr(o, "realized_pnl",     None),
+            "realized_pnl_pct": getattr(o, "realized_pnl_pct", None),
+            "duration_sec":     getattr(o, "duration_sec",     None),
+        })
+        existing_ids.add(o.order_id)
+    if len(trade_history) > 500:
+        data["trade_history"] = trade_history[-500:]
 
     cycle_entry = {
         "cycle":          cycle,
@@ -417,6 +446,9 @@ def run_cycle(
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[Cycle #{cycle}] {ts} UTC")
 
+    # Compteur avant le cycle pour capturer TOUS les ordres (SL + autoclose + copie)
+    orders_before = trader.portfolio.total_orders_count
+
     # 0a. Stop-loss : ferme toute position avec PnL latent <= -20%
     try:
         sl_orders = trader.auto_stop_loss(_price_cache, max_loss_pct=-20.0)
@@ -522,9 +554,11 @@ def run_cycle(
 
     # 7. Sauvegarde performance
     try:
+        all_executed = trader.portfolio.total_orders_count - orders_before
         save_perf(perf, trader, cycle, snapshot,
                   new_trades=len(new_trades),
                   executed=len(executed_orders),
+                  all_executed=all_executed,
                   top_markets=top_markets)
     except Exception as e:
         print(f"  [WARN] save_perf : {e}")
