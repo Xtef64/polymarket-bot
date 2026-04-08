@@ -35,10 +35,11 @@ from telegram_notifier  import (
 
 # Top 3 du leaderboard Polymarket par profit (30j) — limité à 3 pour réduire l'empreinte mémoire
 WALLETS_TO_TRACK = [
-    "0x492442eab586f242b53bda933fd5de859c8a3782",  # sports actif 07/04
-    "0xea9b517a08ccf962b85db123b36e775a87d02be5",  # actif 08/04, trades variés 0.27-1.00
-    "0x270fd599b1c57d04d893a3e799ed635254ca5e39",  # actif 08/04, prix 0.38-0.65
-    "0xb2755157774138346b3a19df1accf8912c8f97e5",  # actif 08/04, prix 0.36-0.74
+    "0xea9b517a08ccf962b85db123b36e775a87d02be5",  # conservé — actif et performant
+    "0xc2e7800b5af46e6093872b177b7a5e7f0563be51",  # #4 beachboy4    — 9 trades/24h, PnL $3.7M
+    "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",  # #7 RN1           — 20 trades/24h, PnL $1.9M
+    "0xee613b3fc183ee44f9da9c05f53e2da107e3debf",  # #9 sovereign2013 — 20 trades/24h, PnL $1.75M
+    "0xb45a797faa52b0fd8adc56d30382022b7b12192c",  # #12 bcda         — 7 trades/24h, PnL $1.3M
 ]
 
 BOT_CONFIG = {
