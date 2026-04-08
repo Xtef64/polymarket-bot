@@ -18,7 +18,7 @@ _session.headers.update({"Accept": "application/json", "User-Agent": "polymarket
 DEFAULT_TRADE_SIZE_USDC = 10.0   # montant par trade en USDC (dry run)
 MAX_TRADE_SIZE_USDC     = 100.0
 MAX_OPEN_POSITIONS      = 20
-MIN_PRICE               = 0.10   # filtre : ignore les trades sous $0.10
+MIN_PRICE               = 0.02   # prix minimum accepté
 MAX_PRICE               = 0.98   # élargi : accepte jusqu'à 98¢ (wallet #4 trade à 0.96-0.999)
 MIN_MARKET_VOLUME       = 1_000  # réduit : 1k USD (was 5k, trop restrictif)
 CLOB_API                = "https://clob.polymarket.com"
