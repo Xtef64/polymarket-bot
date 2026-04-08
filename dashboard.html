@@ -131,6 +131,10 @@
   <div class="card"><div class="card-title">Cycles / Runtime</div><div class="card-value" id="kv-cycles">—</div><div class="card-sub" id="ks-rt">—</div></div>
 </div>
 
+<!-- ── Wallets suivis ── -->
+<div class="stitle">Wallets suivis <span id="tracked-count" style="color:var(--blue);font-size:12px;font-weight:600;text-transform:none;letter-spacing:0"></span></div>
+<div id="tracked-wallets" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;"></div>
+
 <!-- ── Portfolio chart ── -->
 <div class="stitle">Evolution du portefeuille</div>
 <div class="card" style="margin-bottom:16px;">
@@ -274,6 +278,41 @@ function getOrCreate(id, type, data, options) {
   if (CHARTS[id]) { CHARTS[id].destroy(); }
   CHARTS[id] = new Chart(ctx, { type, data, options });
   return CHARTS[id];
+}
+
+// ── Wallets suivis ────────────────────────────────────────────────────────────
+function renderTrackedWallets(d) {
+  const wallets  = (d.meta && d.meta.wallets) || [];
+  const lastCyc  = (d.cycles || []).slice(-1)[0] || {};
+  const snap     = lastCyc.wallets || {};
+
+  document.getElementById('tracked-count').textContent = `${wallets.length} actifs`;
+
+  document.getElementById('tracked-wallets').innerHTML = wallets.map((addr, i) => {
+    const info  = walletInfo(addr);
+    const s     = snap[addr] || {};
+    const pnl   = s.pnl  ?? null;
+    const vol   = s.volume ?? null;
+    const pos   = s.open_positions ?? null;
+    const pnlCls = pnl != null ? clsPct(pnl) : 'neutral';
+    const polyUrl = `https://polymarket.com/profile/${addr}`;
+    return `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+                padding:12px 16px;display:flex;align-items:center;gap:12px;flex:1;min-width:200px;max-width:280px;">
+      <div style="width:10px;height:10px;border-radius:50%;background:${info.color};flex-shrink:0"></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:13px;margin-bottom:2px">${info.label}</div>
+        <a href="${polyUrl}" target="_blank" rel="noopener"
+           style="font-family:monospace;font-size:10px;color:var(--muted);text-decoration:none"
+           title="${addr}">${addr.slice(0,10)}…${addr.slice(-6)}</a>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        ${pnl != null ? `<div class="${pnlCls}" style="font-weight:700;font-size:13px">${fmt$(pnl)}</div>` : ''}
+        ${vol != null ? `<div style="font-size:10px;color:var(--muted)">${fmt$(vol)} vol</div>` : ''}
+        ${pos != null ? `<div style="font-size:10px;color:var(--muted)">${pos} pos.</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // ── Portfolio chart ───────────────────────────────────────────────────────────
@@ -774,6 +813,7 @@ async function loadAndRender() {
     const wallets = meta.wallets||[];
     window._lastData = d;
     renderKPIs(d);
+    renderTrackedWallets(d);
     drawPortfolioChart(cycles);
     drawPnlChart(d.trade_history||[]);
     renderLeaderboard(d);
