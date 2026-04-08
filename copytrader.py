@@ -24,7 +24,7 @@ MIN_MARKET_VOLUME       = 1_000  # réduit : 1k USD (was 5k, trop restrictif)
 CLOB_API                = "https://clob.polymarket.com"
 GAMMA_API               = "https://gamma-api.polymarket.com"
 STALE_POSITION_HOURS    = 72     # élargi : 72h avant auto-close (was 24h, fermait trop vite)
-MAX_RESOLUTION_HOURS    = 20     # filtre : ignore les marchés se résolvant dans plus de 20h
+MAX_RESOLUTION_HOURS    = 72     # filtre : ignore les marchés se résolvant dans plus de 3 jours
 MAX_MARKET_EXPOSURE_PCT = 0.70   # max 70% du capital total sur un même marché
 
 
