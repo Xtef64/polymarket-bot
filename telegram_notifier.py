@@ -137,16 +137,16 @@ class TelegramCommandHandler:
             "/help":      self._cmd_help,
             "/ping":      self._cmd_ping,
         }
-        print("  [Telegram] Poll loop demarre")
+        print("  [Telegram] Poll loop demarre (intervalle 2s, pas de long-polling)")
         while self._running and not self._stop_event.is_set():
             try:
                 r = _tg_session.get(
                     f"{TELEGRAM_API}/bot{BOT_TOKEN}/getUpdates",
-                    params={"offset": self._offset, "timeout": 20},
-                    timeout=25,
+                    params={"offset": self._offset, "timeout": 0},  # pas de long-polling
+                    timeout=5,  # coupe net si pas de réponse en 5s
                 )
                 if r.status_code != 200:
-                    print(f"  [Telegram] getUpdates HTTP {r.status_code} — retry dans 5s")
+                    print(f"  [Telegram] getUpdates HTTP {r.status_code}")
                     r.close()
                     time.sleep(5)
                     continue
@@ -154,20 +154,25 @@ class TelegramCommandHandler:
                 r.close()
                 for upd in updates:
                     self._offset = upd["update_id"] + 1
-                    raw = upd.get("message", {}).get("text", "") or ""
-                    parts = raw.strip().lower().split()
-                    if not parts:
+                    msg  = upd.get("message") or upd.get("edited_message") or {}
+                    raw  = (msg.get("text") or "").strip()
+                    if not raw:
                         continue
-                    cmd = parts[0]
-                    print(f"  [Telegram] Commande recue : {cmd}")
+                    # Accepte "/cmd" et "/cmd@botname"
+                    cmd = raw.lower().split()[0].split("@")[0]
+                    print(f"  [Telegram] >>> commande : '{cmd}' (update_id={upd['update_id']})")
                     fn = DISPATCH.get(cmd)
                     if fn:
-                        self._safe_run(fn)  # execution directe, pas de thread
+                        self._safe_run(fn)
                     else:
-                        print(f"  [Telegram] Commande inconnue : {cmd}")
+                        print(f"  [Telegram] commande inconnue ignoree : {cmd}")
+            except requests.exceptions.Timeout:
+                print("  [Telegram] Timeout getUpdates — retry")
             except Exception as e:
-                print(f"  [Telegram] Erreur poll : {e}")
+                print(f"  [Telegram] Erreur poll : {type(e).__name__}: {e}")
                 time.sleep(5)
+            # Pause fixe de 2s entre chaque poll
+            time.sleep(2)
 
     def _safe_run(self, fn) -> None:
         """Exécute une commande en isolant les erreurs pour ne pas crasher le thread."""
