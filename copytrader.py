@@ -322,13 +322,28 @@ class CopyTrader:
     ) -> list[SimulatedOrder]:
         """Traite une liste de nouveaux trades détectés par le WalletTracker."""
         executed = []
+        rejections: dict[str, int] = {}
         for trade in new_trades:
             market_id   = trade.get("market") or trade.get("conditionId", "")
             market_info = (market_lookup or {}).get(market_id)
-            order = self.copy_trade(trade, market_info)
-            if order:
-                executed.append(order)
+
+            # Évalue la validité directement pour capturer la raison de rejet
+            valid, reason = self._is_valid_trade(trade, market_info)
+            if not valid:
+                rejections[reason.split(" (")[0]] = rejections.get(reason.split(" (")[0], 0) + 1
+                price = float(trade.get("price", 0) or 0)
+                src   = trade.get("_source", "?")
+                print(f"  [Filtre] {reason} | prix=${price:.3f} src={src} market={market_id[:14]}...")
+            else:
+                order = self.copy_trade(trade, market_info)
+                if order:
+                    executed.append(order)
             time.sleep(0.1)
+
+        if rejections:
+            summary = " | ".join(f"{k}: {v}" for k, v in sorted(rejections.items(), key=lambda x: -x[1]))
+            print(f"  [Filtres] Résumé rejets : {summary}")
+
         return executed
 
     def _fetch_midpoint(self, token_id: str) -> Optional[float]:
