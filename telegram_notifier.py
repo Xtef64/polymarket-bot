@@ -19,17 +19,15 @@ _clob_session = requests.Session()
 _clob_session.headers.update({"Accept": "application/json", "User-Agent": "polymarket-bot/1.0"})
 
 GAMMA_API          = "https://gamma-api.polymarket.com"
-_market_name_cache: dict = {}   # conditionId → question (persistant pour toute la session)
+_market_cache: dict = {}   # conditionId → {"question": str, "end_date": str|None}
 
 
-def _get_market_name(condition_id: str, max_len: int = 55) -> str:
-    """Retourne le nom complet du marché depuis l'API Gamma (cache en mémoire).
-    Fallback sur l'ID court si l'API est indisponible."""
-    if not condition_id:
-        return "?"
-    if condition_id in _market_name_cache:
-        name = _market_name_cache[condition_id]
-        return name[:max_len] + "…" if len(name) > max_len else name
+def _fetch_market_info(condition_id: str) -> dict:
+    """Appelle Gamma API et retourne {"question": ..., "end_date": ...}.
+    Met le résultat en cache. Retourne des valeurs vides si indisponible."""
+    if condition_id in _market_cache:
+        return _market_cache[condition_id]
+    info = {"question": "", "end_date": None}
     try:
         r = _clob_session.get(
             f"{GAMMA_API}/markets",
@@ -40,16 +38,50 @@ def _get_market_name(condition_id: str, max_len: int = 55) -> str:
             data = r.json()
             r.close()
             if isinstance(data, list) and data:
-                name = data[0].get("question", "") or ""
-                if name:
-                    _market_name_cache[condition_id] = name
-                    return name[:max_len] + "…" if len(name) > max_len else name
+                m = data[0]
+                info["question"] = m.get("question", "") or ""
+                info["end_date"]  = m.get("endDate") or None
+                if info["question"]:          # ne cache que les succès complets
+                    _market_cache[condition_id] = info
         else:
             r.close()
     except Exception:
         pass
-    # Fallback : ID court
-    return f"{condition_id[:10]}…"
+    return info
+
+
+def _get_market_name(condition_id: str, max_len: int = 55) -> str:
+    """Retourne le nom du marché (tronqué si besoin). Fallback sur ID court."""
+    if not condition_id:
+        return "?"
+    name = _fetch_market_info(condition_id).get("question", "")
+    if not name:
+        return f"{condition_id[:10]}…"
+    return name[:max_len] + "…" if len(name) > max_len else name
+
+
+def _fmt_resolution(condition_id: str) -> str:
+    """Retourne une chaîne 'Résolution dans Xh Ym (HH:MM UTC)' ou '' si inconnue."""
+    end_date_str = _fetch_market_info(condition_id).get("end_date")
+    if not end_date_str:
+        return ""
+    try:
+        end_dt  = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+        now     = datetime.now(timezone.utc)
+        delta   = end_dt - now
+        total_s = int(delta.total_seconds())
+        if total_s <= 0:
+            return "⚠️ Marché déjà résolu"
+        h, rem = divmod(total_s, 3600)
+        m      = rem // 60
+        hhmm   = end_dt.strftime("%H:%M")
+        date_s = end_dt.strftime("%Y-%m-%d")
+        if h >= 24:
+            jours = h // 24
+            return f"⏳ Résolution dans {jours}j {h % 24}h ({date_s} {hhmm} UTC)"
+        return f"⏳ Résolution dans {h}h {m:02d}m ({hhmm} UTC)"
+    except Exception:
+        return ""
 
 COMMANDS_HELP = """🤖 <b>Polymarket Bot — Commandes</b>
 
@@ -97,11 +129,13 @@ def _flush_pending_updates() -> int:
 def notify_trade(order) -> None:
     icon        = "🟢" if order.side == "BUY" else "🔴"
     market_name = _get_market_name(order.market_id)
+    resolution  = _fmt_resolution(order.market_id)
+    resol_line  = f"\n  {resolution}" if resolution else ""
     _send(
         f"{icon} <b>[DRY RUN] Nouveau trade</b>\n"
         f"  {order.side} {order.outcome} @ ${order.price:.3f}\n"
         f"  {order.shares:.2f} shares · ${order.size_usdc:.2f} USDC\n"
-        f"  📌 {market_name}\n"
+        f"  📌 {market_name}{resol_line}\n"
         f"  Source: <code>{order.wallet_source[:20] if order.wallet_source else '?'}</code>\n"
         f"  ID: {order.order_id}"
     )
