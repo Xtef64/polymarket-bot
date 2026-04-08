@@ -303,6 +303,22 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
 
     print(f"  >> Portfolio restaure : {restored} position(s), cash=${saved_cash:.2f}")
 
+    # Restaure le compteur d'ordres pour éviter les collisions d'ID (SIM-xxxxx) après redémarrage
+    from copytrader import SimulatedOrder
+    max_counter = 0
+    for t in perf.get("trade_history", []):
+        oid = t.get("order_id", "")
+        if oid.startswith("SIM-"):
+            try:
+                n = int(oid[4:])
+                if n > max_counter:
+                    max_counter = n
+            except ValueError:
+                pass
+    if max_counter > 0:
+        SimulatedOrder._counter = max_counter
+        print(f"  >> Compteur d'ordres restaure : SIM-{max_counter:05d} (evite collisions post-restart)")
+
 
 def _do_price_refresh(trader: "CopyTrader", perf: dict) -> None:
     """Récupère les prix CLOB, met à jour _price_cache et performance.json."""

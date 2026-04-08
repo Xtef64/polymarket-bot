@@ -325,13 +325,22 @@ function drawPnlChart(tradeHistory) {
     return;
   }
 
+  // Ancre fixe à $0.00 au moment du premier trade — ne bouge jamais
+  const fmtLabel = ts => {
+    const dt = new Date(ts);
+    return dt.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'}) + ' ' +
+           dt.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+  };
+  const labels    = [fmtLabel(sells[0].ts)];
+  const data      = [0];
+  const ptColors  = ['#8b949e'];
+  const ptRadii   = [2];
+  const sellRefs  = [null];
+
   let cum = 0;
-  const labels = [], data = [], ptColors = [], ptRadii = [], sellRefs = [];
   sells.forEach(t => {
     cum += t.realized_pnl;
-    const dt = new Date(t.ts);
-    labels.push(dt.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'}) + ' ' +
-                dt.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}));
+    labels.push(fmtLabel(t.ts));
     data.push(+cum.toFixed(4));
     ptColors.push(cum >= 0 ? '#3fb950' : '#f85149');
     ptRadii.push(sells.length > 60 ? 2 : 4);
