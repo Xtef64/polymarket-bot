@@ -163,25 +163,44 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         for o in portfolio.order_log[-all_executed:] if all_executed > 0
     ]
 
+    # Accumule les noms / slugs de marchés pour le dashboard (lookup persistant)
+    market_names = data.setdefault("market_names", {})
+    for m in top_markets:
+        cid = m.get("conditionId", "")
+        if cid and m.get("question"):
+            market_names[cid] = {
+                "question":   m["question"],
+                "slug":       m.get("slug", ""),
+                "group_slug": m.get("group_slug", ""),
+            }
+    if len(market_names) > 2000:
+        excess = len(market_names) - 2000
+        for k in list(market_names.keys())[:excess]:
+            del market_names[k]
+
     # Historique cumulatif des trades (capped 500) — alimente le graphique PnL
     trade_history = data.setdefault("trade_history", [])
     existing_ids  = {t.get("order_id") for t in trade_history}
     for o in (portfolio.order_log[-all_executed:] if all_executed > 0 else []):
         if o.order_id in existing_ids:
             continue
+        minfo = market_names.get(o.market_id, {})
         trade_history.append({
-            "order_id":         o.order_id,
-            "ts":               o.timestamp,
-            "market_id":        o.market_id[:32] if o.market_id else "",
-            "outcome":          o.outcome,
-            "source":           o.wallet_source[:20] if o.wallet_source else "",
-            "side":             o.side,
-            "price":            o.price,
-            "shares":           round(o.shares, 4),
-            "entry_price":      getattr(o, "entry_price",      None),
-            "realized_pnl":     getattr(o, "realized_pnl",     None),
-            "realized_pnl_pct": getattr(o, "realized_pnl_pct", None),
-            "duration_sec":     getattr(o, "duration_sec",     None),
+            "order_id":          o.order_id,
+            "ts":                o.timestamp,
+            "market_id":         o.market_id,  # ID complet (plus de troncature)
+            "market_question":   minfo.get("question", ""),
+            "market_slug":       minfo.get("slug", ""),
+            "market_group_slug": minfo.get("group_slug", ""),
+            "outcome":           o.outcome,
+            "source":            o.wallet_source[:20] if o.wallet_source else "",
+            "side":              o.side,
+            "price":             o.price,
+            "shares":            round(o.shares, 4),
+            "entry_price":       getattr(o, "entry_price",      None),
+            "realized_pnl":      getattr(o, "realized_pnl",     None),
+            "realized_pnl_pct":  getattr(o, "realized_pnl_pct", None),
+            "duration_sec":      getattr(o, "duration_sec",      None),
         })
         existing_ids.add(o.order_id)
     if len(trade_history) > 500:

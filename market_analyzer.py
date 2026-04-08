@@ -157,6 +157,8 @@ class MarketAnalyzer:
                         "score":       score,
                         "end_date":    m.get("endDate"),
                         "tokens":      m.get("tokens", []),
+                        "slug":        m.get("slug", ""),
+                        "group_slug":  m.get("groupSlug", ""),
                     })
                 except Exception:
                     continue

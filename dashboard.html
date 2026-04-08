@@ -213,7 +213,7 @@
   <div class="tbl-wrap lg">
     <table>
       <thead><tr>
-        <th>Date / Heure</th><th>Ordre</th><th>Outcome</th><th>Marché</th>
+        <th>Date / Heure</th><th>Statut</th><th>Ordre</th><th>Outcome</th><th>Marché</th>
         <th>Prix entrée</th><th>Prix sortie</th><th>PnL $</th><th>PnL %</th>
         <th>Durée</th><th>Wallet</th>
       </tr></thead>
@@ -614,11 +614,16 @@ function fmtDur(sec) {
 
 // ── Historique des transactions ───────────────────────────────────────────────
 function renderTransactions(tradeHistory, d) {
-  // Lookup question des marchés depuis top_markets de tous les cycles
-  const mqMap = {};
+  // Lookup persistant depuis market_names (toutes les sessions) + fallback cycles
+  const mqMap = {}, slugMap = {}, groupSlugMap = {};
+  Object.entries(d.market_names || {}).forEach(([cid, info]) => {
+    if (info.question)   mqMap[cid]        = info.question;
+    if (info.slug)       slugMap[cid]      = info.slug;
+    if (info.group_slug) groupSlugMap[cid] = info.group_slug;
+  });
   (d.cycles||[]).forEach(c => {
     (c.top_markets||[]).forEach(m => {
-      if (m.conditionId && m.question) mqMap[m.conditionId] = m.question;
+      if (m.conditionId && m.question && !mqMap[m.conditionId]) mqMap[m.conditionId] = m.question;
     });
   });
 
@@ -639,7 +644,7 @@ function renderTransactions(tradeHistory, d) {
 
   const tbody = document.getElementById('txn-tbody');
   if (!filtered.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="empty">Aucune transaction — les données apparaîtront après la première fermeture de position</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="empty">Aucune transaction — les données apparaîtront après la première fermeture de position</td></tr>`;
     return;
   }
 
@@ -647,28 +652,50 @@ function renderTransactions(tradeHistory, d) {
     const dt    = new Date(t.ts);
     const dtStr = dt.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit',year:'2-digit'})
                 + ' ' + dt.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    const info  = walletInfo(t.source);
+    const info   = walletInfo(t.source);
     const isSell = t.side === 'SELL';
+    const src    = (t.source || '').toLowerCase();
 
-    // Nom du marché (lookup ou ID court)
-    const mq = mqMap[t.market_id] || '';
-    const marketCell = mq
-      ? `<span title="${t.market_id}" style="font-size:11px;cursor:default">${mq.length>35?mq.slice(0,34)+'…':mq}</span>`
-      : `<span class="mono" style="color:var(--muted);font-size:10px" title="${t.market_id}">${short(t.market_id)}</span>`;
+    // ── Statut ────────────────────────────────────────────────────────────────
+    let statusHtml;
+    if (!isSell) {
+      statusHtml = `<span class="pill" style="background:#1a2333;color:var(--blue)">OUVERT</span>`;
+    } else if (src === 'stop-loss') {
+      statusHtml = `<span class="pill" style="background:#2e1a1a;color:var(--red)">STOP-LOSS</span>`;
+    } else if (src === 'auto-close') {
+      statusHtml = `<span class="pill" style="background:#2e1e0a;color:var(--yellow)">AUTO-CLOSE</span>`;
+    } else {
+      statusHtml = `<span class="pill" style="background:#1a2e1a;color:var(--green)">FERMÉ</span>`;
+    }
 
-    // Prix entrée / sortie
+    // ── Nom du marché + lien ──────────────────────────────────────────────────
+    const question  = t.market_question || mqMap[t.market_id] || '';
+    const linkSlug  = t.market_group_slug || groupSlugMap[t.market_id]
+                   || t.market_slug       || slugMap[t.market_id] || '';
+    const mtext     = question.length > 42 ? question.slice(0, 41) + '…' : question;
+    let marketCell;
+    if (question && linkSlug) {
+      marketCell = `<a href="https://polymarket.com/event/${linkSlug}" target="_blank" rel="noopener"
+        title="${question}" style="color:var(--blue);text-decoration:none;font-size:11px">${mtext}</a>`;
+    } else if (question) {
+      marketCell = `<span title="${t.market_id}" style="font-size:11px">${mtext}</span>`;
+    } else {
+      marketCell = `<span class="mono" style="color:var(--muted);font-size:10px" title="${t.market_id}">${short(t.market_id)}</span>`;
+    }
+
+    // ── Prix entrée / sortie ──────────────────────────────────────────────────
     const entryPrice = isSell ? t.entry_price : t.price;
     const exitPrice  = isSell ? t.price : null;
     const entryCell  = entryPrice != null
       ? `<span class="mono">$${Number(entryPrice).toFixed(4)}</span>` : '—';
-    const exitCell   = exitPrice  != null
+    const exitCell   = exitPrice != null
       ? `<span class="mono">$${Number(exitPrice).toFixed(4)}</span>`
       : `<span style="color:var(--muted);font-size:11px">—</span>`;
 
-    // PnL
+    // ── PnL ───────────────────────────────────────────────────────────────────
     const pnl    = t.realized_pnl;
     const pnlPct = t.realized_pnl_pct;
-    const pCls   = pnl != null ? (pnl>=0?'positive':'negative') : 'neutral';
+    const pCls   = pnl != null ? (pnl >= 0 ? 'positive' : 'negative') : 'neutral';
     const pnlCell = pnl != null
       ? `<span class="mono ${pCls}" style="font-weight:700">${pnl>=0?'+':''}${fmt$(pnl)}</span>`
       : `<span style="color:var(--muted)">—</span>`;
@@ -678,9 +705,10 @@ function renderTransactions(tradeHistory, d) {
 
     return `<tr>
       <td class="mono" style="color:var(--muted);font-size:11px;white-space:nowrap">${dtStr}</td>
+      <td>${statusHtml}</td>
       <td><span class="pill ${t.side==='BUY'?'pill-buy':'pill-sell'}">${t.side}</span></td>
       <td><span class="${outcomeClass(t.outcome)}">${t.outcome}</span></td>
-      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${marketCell}</td>
+      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${marketCell}</td>
       <td>${entryCell}</td>
       <td>${exitCell}</td>
       <td>${pnlCell}</td>
