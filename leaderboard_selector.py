@@ -18,14 +18,18 @@ _session = requests.Session()
 _session.headers.update({"Accept": "application/json", "User-Agent": "polymarket-bot/1.0"})
 
 # Intervalle de rafraichissement du leaderboard
-REFRESH_INTERVAL_H = 24
+REFRESH_INTERVAL_H = 1    # toutes les heures
 
 # Parametres de selection
 N_WALLETS          = 5    # nombre de wallets a suivre
 MIN_PNL            = 0    # PnL minimum ($) pour etre eligible
-LEADERBOARD_POOL   = 50   # combien de wallets on scrute en haut du classement
+LEADERBOARD_POOL   = 80   # combien de wallets on scrute en haut du classement
 MIN_RECENT_TRADES  = 3    # trades recents minimum pour etre considere "actif"
 RECENT_HOURS       = 72   # fenetre d'activite recente (heures)
+
+# Criteres de remplacement automatique (evalue chaque heure)
+INACTIVE_MAX_TRADES_1H = 0   # trades dans la derniere heure en-dessous duquel = inactif
+INACTIVE_MAX_PNL       = 0.0 # PnL mensuel en-dessous duquel (combiné avec trades) = inactif
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -91,6 +95,21 @@ def _has_open_positions(wallet: str) -> bool:
     except Exception:
         pass
     return False
+
+
+# -- PnL individuel -----------------------------------------------------------
+
+def _get_wallets_pnl(addresses: list, time_period: str = "MONTH") -> dict:
+    """Retourne {address_lower: pnl} pour les wallets donnes.
+    Fetche le top 200 du leaderboard et mappe les adresses.
+    Si une adresse est absente du classement, son PnL est 0."""
+    candidates = _fetch_leaderboard(limit=200, time_period=time_period)
+    result = {a.lower(): 0.0 for a in addresses}
+    for entry in candidates:
+        addr = (entry.get("proxyWallet") or "").lower()
+        if addr in result:
+            result[addr] = float(entry.get("pnl", 0) or 0)
+    return result
 
 
 # -- Selection principale -----------------------------------------------------
@@ -187,69 +206,143 @@ def leaderboard_refresh_loop(
 
 
 def _run_selection(tracker, perf: dict, tg_send=None) -> None:
-    """Execute une selection et met a jour tracker.wallets si des candidats sont trouves."""
-    now = datetime.now(timezone.utc).isoformat()
-    best = select_best_wallets()
+    """Evalue chaque wallet suivi. Remplace ceux qui sont inactifs
+    (PnL=0 ET 0 trade dans la derniere heure) par de nouveaux candidats."""
+    now     = datetime.now(timezone.utc).isoformat()
+    current = list(tracker.wallets)
 
-    if not best:
-        print("  [Leaderboard] Aucun wallet eligible - conservation de la liste actuelle")
+    print(f"\n  [Leaderboard] Evaluation des {len(current)} wallets suivis...")
+
+    # 1. PnL mensuel de chaque wallet suivi (1 appel leaderboard)
+    pnl_map = _get_wallets_pnl(current)
+
+    # 2. Identifie les wallets inactifs
+    inactive = []
+    for wallet in current:
+        pnl = pnl_map.get(wallet.lower(), 0.0)
+        if pnl > INACTIVE_MAX_PNL:
+            print(f"    {wallet[:12]}... PnL=${pnl:,.0f} — actif (PnL positif)")
+            continue
+        trades_1h = _count_recent_trades(wallet, hours=1)
+        if trades_1h <= INACTIVE_MAX_TRADES_1H:
+            print(f"    {wallet[:12]}... PnL=${pnl:,.0f} trades/1h={trades_1h} — INACTIF → remplacement")
+            inactive.append(wallet)
+        else:
+            print(f"    {wallet[:12]}... PnL=${pnl:,.0f} trades/1h={trades_1h} — PnL=0 mais actif, conserve")
+        time.sleep(0.2)
+
+    if not inactive:
+        print(f"  [Leaderboard] Tous les wallets actifs — aucun remplacement")
+        _log_selection(perf, [], now, changed=False)
         return
 
-    new_addresses = [w["address"] for w in best]
-    old_addresses = list(tracker.wallets)
+    print(f"  [Leaderboard] {len(inactive)} wallet(s) inactif(s) a remplacer")
 
-    added   = [a for a in new_addresses if a not in old_addresses]
-    removed = [a for a in old_addresses if a not in new_addresses]
+    # 3. Cherche des remplacants dans le leaderboard (non deja suivis)
+    keep_set      = {w.lower() for w in current if w not in inactive}
+    candidates    = _fetch_leaderboard(limit=LEADERBOARD_POOL)
+    inactive_q    = list(inactive)
+    replacements  = []   # [{old_wallet, new_wallet, pnl, username, rank, trades_1h}]
 
-    if not added and not removed:
-        print(f"  [Leaderboard] Wallets inchanges ({len(new_addresses)} suivis)")
-        _log_selection(perf, best, now, changed=False)
+    for entry in candidates:
+        if not inactive_q:
+            break
+        addr     = (entry.get("proxyWallet") or "").lower()
+        pnl      = float(entry.get("pnl", 0) or 0)
+        username = entry.get("userName", addr[:10])
+        rank     = entry.get("rank", "?")
+
+        if not addr or len(addr) != 42:
+            continue
+        if addr in keep_set or pnl <= INACTIVE_MAX_PNL:
+            continue
+
+        trades_1h = _count_recent_trades(addr, hours=1)
+        if trades_1h <= INACTIVE_MAX_TRADES_1H:
+            print(f"    #{rank} {username}: PnL=${pnl:,.0f} mais 0 trade/1h — ignore")
+            time.sleep(0.2)
+            continue
+
+        old = inactive_q.pop(0)
+        replacements.append({
+            "old_wallet": old,
+            "new_wallet": addr,
+            "pnl":        pnl,
+            "username":   username,
+            "rank":       rank,
+            "trades_1h":  trades_1h,
+        })
+        keep_set.add(addr)
+        print(f"    #{rank} {username} ({addr[:12]}...): {trades_1h} trade(s)/1h "
+              f"→ remplace {old[:12]}...")
+        time.sleep(0.2)
+
+    if not replacements:
+        print("  [Leaderboard] Aucun remplacant eligible trouve — liste inchangee")
+        _log_selection(perf, [], now, changed=False)
         return
 
-    # Mise a jour thread-safe de la liste
-    tracker.wallets = new_addresses
-    # Reinitialise les caches position/trade pour les wallets retires
-    # Les nouveaux wallets seront initialises silencieusement au 1er cycle
-    # (detect_position_changes gere le cas wallet non present dans _last_positions)
-    tracker._last_trades    = {w: v for w, v in tracker._last_trades.items()    if w in new_addresses}
-    tracker._last_positions = {w: v for w, v in tracker._last_positions.items() if w in new_addresses}
+    # 4. Applique les remplacements (preserves l'ordre, remplace en place)
+    replace_map = {r["old_wallet"].lower(): r["new_wallet"] for r in replacements}
+    new_wallets = [replace_map.get(w.lower(), w) for w in current]
 
-    print(f"\n  [Leaderboard] Wallets MIS A JOUR")
-    print(f"    Ajoutes  : {added}")
-    print(f"    Retires  : {removed}")
-    for w in best:
-        print(f"    #{w['rank']:>3} {w['username']:<20} PnL=${w['pnl']:>12,.0f}  trades_recents={w['recent_trades']}")
+    removed_set = {r["old_wallet"] for r in replacements}
+    tracker.wallets         = new_wallets
+    tracker._last_trades    = {w: v for w, v in tracker._last_trades.items()    if w not in removed_set}
+    tracker._last_positions = {w: v for w, v in tracker._last_positions.items() if w not in removed_set}
 
-    _log_selection(perf, best, now, changed=True, added=added, removed=removed)
+    print(f"\n  [Leaderboard] {len(replacements)} wallet(s) remplace(s) :")
+    for r in replacements:
+        print(f"    - {r['old_wallet'][:12]}... → #{r['rank']} {r['username']} "
+              f"({r['new_wallet'][:12]}...) PnL=${r['pnl']:,.0f}")
 
+    _log_selection(perf, replacements, now, changed=True)
+
+    # 5. Notification Telegram
     if tg_send:
-        lines = [f"<b>Wallets mis a jour automatiquement</b> ({now[:10]})"]
-        for w in best:
-            lines.append(f"  #{w['rank']} {w['username']} - PnL ${w['pnl']:,.0f}")
-        if added:
-            lines.append(f"\n  + Ajoutes   : {len(added)}")
-        if removed:
-            lines.append(f"  - Retires   : {len(removed)}")
+        lines = [f"🔄 <b>Wallets mis à jour automatiquement</b>"]
+        for r in replacements:
+            lines.append(
+                f"\n❌ Retiré  : <code>{r['old_wallet'][:14]}…</code>"
+                f" (PnL=$0, inactif)\n"
+                f"✅ Ajouté  : #{r['rank']} <b>{r['username']}</b>"
+                f" <code>{r['new_wallet'][:14]}…</code>\n"
+                f"   PnL ${r['pnl']:,.0f}/mois · {r['trades_1h']} trade(s)/1h"
+            )
         try:
             tg_send("\n".join(lines))
         except Exception:
             pass
 
 
-def _log_selection(perf: dict, wallets: list[dict], ts: str,
-                   changed: bool, added: list = None, removed: list = None) -> None:
-    """Enregistre la selection dans perf["leaderboard_history"] (max 30 entrees)."""
+def _log_selection(perf: dict, replacements: list[dict], ts: str,
+                   changed: bool) -> None:
+    """Enregistre le resultat de l'evaluation dans perf["leaderboard_history"] (max 30)."""
     history = perf.setdefault("leaderboard_history", [])
-    history.append({
-        "timestamp": ts,
-        "changed":   changed,
-        "wallets":   [
-            {"address": w["address"], "username": w["username"],
-             "pnl": w["pnl"], "rank": w["rank"]}
-            for w in wallets
-        ],
-        "added":   added or [],
-        "removed": removed or [],
-    })
+    entry = {"timestamp": ts, "changed": changed, "replacements": []}
+    if changed:
+        entry["replacements"] = [
+            {
+                "old": r["old_wallet"],
+                "new": r["new_wallet"],
+                "username": r["username"],
+                "pnl": r["pnl"],
+                "rank": r["rank"],
+            }
+            for r in replacements
+        ]
+        # Champs compatibles avec le dashboard existant
+        entry["added"]   = [r["new_wallet"] for r in replacements]
+        entry["removed"] = [r["old_wallet"] for r in replacements]
+        entry["wallets"] = [
+            {"address": r["new_wallet"], "username": r["username"],
+             "pnl": r["pnl"], "rank": r["rank"]}
+            for r in replacements
+        ]
+    else:
+        entry["added"] = []
+        entry["removed"] = []
+        entry["wallets"] = []
+    history.append(entry)
     if len(history) > 30:
         perf["leaderboard_history"] = history[-30:]
