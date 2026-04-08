@@ -162,8 +162,7 @@ class TelegramCommandHandler:
                     print(f"  [Telegram] Commande recue : {cmd}")
                     fn = DISPATCH.get(cmd)
                     if fn:
-                        threading.Thread(target=self._safe_run, args=(fn,),
-                                         daemon=True).start()
+                        self._safe_run(fn)  # execution directe, pas de thread
                     else:
                         print(f"  [Telegram] Commande inconnue : {cmd}")
             except Exception as e:
