@@ -417,7 +417,21 @@ def run_cycle(
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[Cycle #{cycle}] {ts} UTC")
 
-    # 0. Fermeture automatique des positions périmées (>24h)
+    # 0a. Stop-loss : ferme toute position avec PnL latent <= -20%
+    try:
+        sl_orders = trader.auto_stop_loss(_price_cache, max_loss_pct=-20.0)
+        if sl_orders:
+            print(f"  >> [StopLoss] {len(sl_orders)} position(s) fermee(s)")
+            if tg_handler:
+                lines = [f"🛑 Stop-loss : {len(sl_orders)} position(s) fermee(s)"]
+                for o in sl_orders:
+                    avg = trader.portfolio.realized_pnl  # juste pour référence
+                    lines.append(f"  SELL {o.outcome} {o.shares:.1f}sh @ ${o.price:.4f}")
+                tg_send("\n".join(lines))
+    except Exception as e:
+        print(f"  [WARN] auto_stop_loss : {e}")
+
+    # 0b. Fermeture automatique des positions périmées (>72h)
     try:
         closed_orders = trader.auto_close_stale_positions()
         if closed_orders:

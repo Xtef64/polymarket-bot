@@ -372,6 +372,61 @@ class CopyTrader:
 
         return closed
 
+    def auto_stop_loss(
+        self,
+        price_cache: dict,
+        max_loss_pct: float = -20.0,
+    ) -> list["SimulatedOrder"]:
+        """
+        Ferme toute position dont le PnL latent dépasse max_loss_pct (ex: -20%).
+        Utilise price_cache en priorité, sinon appelle l'API midpoint.
+        Retourne la liste des ordres de fermeture exécutés.
+        """
+        closed: list[SimulatedOrder] = []
+        to_close: list[tuple[str, float, float]] = []  # (token_id, current_price, pnl_pct)
+
+        for token_id, pos in list(self.portfolio.positions.items()):
+            avg_cost = pos.get("avg_cost", 0.0)
+            if avg_cost <= 0:
+                continue
+            cur_price = price_cache.get(token_id)
+            if cur_price is None:
+                cur_price = self._fetch_midpoint(token_id)
+            if cur_price is None:
+                continue  # prix inconnu → on ne ferme pas
+            pnl_pct = (cur_price - avg_cost) / avg_cost * 100
+            if pnl_pct <= max_loss_pct:
+                to_close.append((token_id, cur_price, pnl_pct))
+
+        if to_close:
+            print(f"\n  [StopLoss] {len(to_close)} position(s) sous {max_loss_pct:.0f}% a fermer")
+
+        for token_id, price, pnl_pct in to_close:
+            pos = self.portfolio.positions.get(token_id)
+            if not pos:
+                continue
+            order = SimulatedOrder(
+                market_id=pos.get("market_id", ""),
+                token_id=token_id,
+                outcome=pos["outcome"],
+                price=price,
+                size_usdc=pos["total_cost"],
+                side="SELL",
+                wallet_source="stop-loss",
+            )
+            order.shares = pos["shares"]
+            success = self.portfolio.apply_order(order)
+            if success:
+                pnl_usd = (price - pos["avg_cost"]) * pos["shares"]
+                print(
+                    f"  [StopLoss] SELL {pos['outcome']} {pos['shares']:.2f}sh "
+                    f"@ ${price:.4f} | PnL={pnl_usd:+.2f}$ ({pnl_pct:+.1f}%) | {token_id[:12]}..."
+                )
+                closed.append(order)
+            time.sleep(0.1)
+
+        return closed
+
     def display_log(self, last_n: int = 10) -> None:
         print(f"\n── Derniers {last_n} ordres simulés ──────────────────────────────")
         for o in self.portfolio.order_log[-last_n:]:
