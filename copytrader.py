@@ -247,10 +247,6 @@ class CopyTrader:
                         f"= {(market_exposure + self.trade_size_usdc) / total_capital * 100:.0f}% > {MAX_MARKET_EXPOSURE_PCT*100:.0f}%)"
                     )
 
-        # Signaux issus de changements de positions : marché ACTIF par définition
-        if trade.get("_source") in ("position_change", "position_increase", "position_close"):
-            return True, "OK"
-
         if end_date_str is not None:
             try:
                 end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
