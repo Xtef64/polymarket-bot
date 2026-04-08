@@ -18,6 +18,39 @@ _tg_session   = requests.Session()
 _clob_session = requests.Session()
 _clob_session.headers.update({"Accept": "application/json", "User-Agent": "polymarket-bot/1.0"})
 
+GAMMA_API          = "https://gamma-api.polymarket.com"
+_market_name_cache: dict = {}   # conditionId → question (persistant pour toute la session)
+
+
+def _get_market_name(condition_id: str, max_len: int = 55) -> str:
+    """Retourne le nom complet du marché depuis l'API Gamma (cache en mémoire).
+    Fallback sur l'ID court si l'API est indisponible."""
+    if not condition_id:
+        return "?"
+    if condition_id in _market_name_cache:
+        name = _market_name_cache[condition_id]
+        return name[:max_len] + "…" if len(name) > max_len else name
+    try:
+        r = _clob_session.get(
+            f"{GAMMA_API}/markets",
+            params={"condition_id": condition_id},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            r.close()
+            if isinstance(data, list) and data:
+                name = data[0].get("question", "") or ""
+                if name:
+                    _market_name_cache[condition_id] = name
+                    return name[:max_len] + "…" if len(name) > max_len else name
+        else:
+            r.close()
+    except Exception:
+        pass
+    # Fallback : ID court
+    return f"{condition_id[:10]}…"
+
 COMMANDS_HELP = """🤖 <b>Polymarket Bot — Commandes</b>
 
 📊 /status     – Résumé général du portfolio
@@ -62,12 +95,13 @@ def _flush_pending_updates() -> int:
 
 
 def notify_trade(order) -> None:
-    icon = "🟢" if order.side == "BUY" else "🔴"
+    icon        = "🟢" if order.side == "BUY" else "🔴"
+    market_name = _get_market_name(order.market_id)
     _send(
         f"{icon} <b>[DRY RUN] Nouveau trade</b>\n"
         f"  {order.side} {order.outcome} @ ${order.price:.3f}\n"
         f"  {order.shares:.2f} shares · ${order.size_usdc:.2f} USDC\n"
-        f"  Market: <code>{order.market_id[:16]}...</code>\n"
+        f"  📌 {market_name}\n"
         f"  Source: <code>{order.wallet_source[:20] if order.wallet_source else '?'}</code>\n"
         f"  ID: {order.order_id}"
     )
@@ -283,8 +317,10 @@ class TelegramCommandHandler:
         for r in rows:
             pos  = r["pos"]
             icon = "🟢" if r["pnl"] >= 0 else "🔴"
+            mname = _get_market_name(pos.get("market_id", ""), max_len=45)
             lines.append(
                 f"{icon} <b>{pos['outcome']}</b>  {pos['shares']:.1f} sh\n"
+                f"   📌 {mname}\n"
                 f"   ${pos['avg_cost']:.3f} → ${r['cur']:.3f}  "
                 f"| coût ${pos['total_cost']:.2f}\n"
                 f"   <b>{'+' if r['pnl']>=0 else ''}{r['pnl']:.2f}$ ({r['pct']:+.1f}%)</b>"
@@ -313,9 +349,11 @@ class TelegramCommandHandler:
         lines = ["🏆 <b>Top 5 meilleures positions</b>\n"]
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
         for i, r in enumerate(top5):
-            pos = r["pos"]
+            pos   = r["pos"]
+            mname = _get_market_name(pos.get("market_id", ""), max_len=45)
             lines.append(
                 f"{medals[i]} <b>{pos['outcome']}</b>  {pos['shares']:.1f} sh\n"
+                f"   📌 {mname}\n"
                 f"   ${pos['avg_cost']:.3f} → ${r['cur']:.3f}\n"
                 f"   Gain : <b>+{r['pnl']:.2f}$ (+{r['pct']:.1f}%)</b>"
             )
@@ -324,10 +362,12 @@ class TelegramCommandHandler:
         worst3 = sorted(rows, key=lambda x: x["pnl"])[:3]
         lines.append("\n⚠️ <b>3 pires positions</b>")
         for r in worst3:
-            pos = r["pos"]
+            pos   = r["pos"]
+            mname = _get_market_name(pos.get("market_id", ""), max_len=45)
             lines.append(
-                f"🔴 <b>{pos['outcome']}</b>  {pos['shares']:.1f} sh  "
-                f"{r['pnl']:.2f}$ ({r['pct']:+.1f}%)"
+                f"🔴 <b>{pos['outcome']}</b>  {pos['shares']:.1f} sh\n"
+                f"   📌 {mname}\n"
+                f"   {r['pnl']:.2f}$ ({r['pct']:+.1f}%)"
             )
 
         _send("\n".join(lines))
