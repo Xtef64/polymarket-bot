@@ -425,21 +425,39 @@ class CopyTrader:
         closed: list[SimulatedOrder] = []
         to_close: list[tuple[str, float, float]] = []  # (token_id, current_price, pnl_pct)
 
+        n_pos   = len(self.portfolio.positions)
+        n_cache = sum(1 for tid in self.portfolio.positions if tid in price_cache)
+        print(f"  [StopLoss] {n_pos} position(s) — {n_cache}/{n_pos} prix en cache "
+              f"(seuil {max_loss_pct:.0f}%)")
+
         for token_id, pos in list(self.portfolio.positions.items()):
             avg_cost = pos.get("avg_cost", 0.0)
             if avg_cost <= 0:
+                print(f"    {token_id[:14]}... avg_cost=0 — ignoré")
                 continue
+
+            source    = "cache"
             cur_price = price_cache.get(token_id)
             if cur_price is None:
                 cur_price = self._fetch_midpoint(token_id)
+                source    = "CLOB" if cur_price is not None else "indisponible"
+
             if cur_price is None:
-                continue  # prix inconnu → on ne ferme pas
+                print(f"    {token_id[:14]}... avg=${avg_cost:.4f} | prix INDISPONIBLE - ignore")
+                continue
+
             pnl_pct = (cur_price - avg_cost) / avg_cost * 100
+            flag    = " [STOP-LOSS]" if pnl_pct <= max_loss_pct else ""
+            print(f"    {token_id[:14]}... avg=${avg_cost:.4f} cur=${cur_price:.4f} "
+                  f"[{source}] PnL={pnl_pct:+.1f}%{flag}")
+
             if pnl_pct <= max_loss_pct:
                 to_close.append((token_id, cur_price, pnl_pct))
 
         if to_close:
-            print(f"\n  [StopLoss] {len(to_close)} position(s) sous {max_loss_pct:.0f}% a fermer")
+            print(f"  [StopLoss] {len(to_close)} position(s) sous {max_loss_pct:.0f}% a fermer")
+        else:
+            print(f"  [StopLoss] Aucune position sous le seuil")
 
         for token_id, price, pnl_pct in to_close:
             pos = self.portfolio.positions.get(token_id)

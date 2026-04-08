@@ -487,6 +487,8 @@ def run_cycle(
 
     # 0a. Stop-loss : ferme toute position avec PnL latent <= -20%
     try:
+        print(f"  [StopLoss] _price_cache : {len(_price_cache)} token(s) — "
+              f"positions ouvertes : {len(trader.portfolio.positions)}")
         sl_orders = trader.auto_stop_loss(_price_cache, max_loss_pct=-20.0)
         if sl_orders:
             print(f"  >> [StopLoss] {len(sl_orders)} position(s) fermee(s)")
