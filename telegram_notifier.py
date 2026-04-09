@@ -86,9 +86,11 @@ def _fmt_resolution(condition_id: str) -> str:
 COMMANDS_HELP = """🤖 <b>Polymarket Bot — Commandes</b>
 
 📊 /status     – Résumé général du portfolio
-📋 /positions  – Toutes les positions ouvertes avec PnL temps réel
+📋 /positions  – Toutes les positions numérotées avec PnL temps réel
 🏆 /top        – Top 5 meilleures positions (gain potentiel)
 💰 /pnl        – PnL réalisé vs non-réalisé détaillé
+❌ /close1 /close2 … – Ferme la position numérotée
+🔥 /closeall   – Ferme toutes les positions ouvertes
 🛑 /stop       – Arrêter le bot proprement
 ▶️ /start      – Confirmer que le bot tourne
 ❓ /help       – Cette aide"""
@@ -174,13 +176,14 @@ class TelegramCommandHandler:
 
     def __init__(self, trader, stop_event: threading.Event, started_at: datetime = None,
                  price_cache: dict = None):
-        self._trader      = trader
-        self._stop_event  = stop_event
-        self._started_at  = started_at or datetime.now(timezone.utc)
-        self._price_cache = price_cache if price_cache is not None else {}
-        self._offset      = 0
-        self._thread      = None
-        self._running     = False
+        self._trader          = trader
+        self._stop_event      = stop_event
+        self._started_at      = started_at or datetime.now(timezone.utc)
+        self._price_cache     = price_cache if price_cache is not None else {}
+        self._offset          = 0
+        self._thread          = None
+        self._running         = False
+        self._position_index: dict[int, str] = {}  # numéro → token_id
 
     def start(self) -> None:
         self._running = True
@@ -195,6 +198,7 @@ class TelegramCommandHandler:
     # ── Boucle de polling ─────────────────────────────────────────────────────
 
     def _poll_loop(self) -> None:
+        import re
         DISPATCH = {
             "/status":    self._cmd_status,
             "/positions": self._cmd_positions,
@@ -204,6 +208,7 @@ class TelegramCommandHandler:
             "/start":     self._cmd_start,
             "/help":      self._cmd_help,
             "/ping":      self._cmd_ping,
+            "/closeall":  self._cmd_closeall,
         }
         print("  [Telegram] Poll loop demarre (intervalle 2s, pas de long-polling)")
         while self._running and not self._stop_event.is_set():
@@ -233,7 +238,13 @@ class TelegramCommandHandler:
                     if fn:
                         self._safe_run(fn)
                     else:
-                        print(f"  [Telegram] commande inconnue ignoree : {cmd}")
+                        # Commandes dynamiques /close1, /close2, ...
+                        m = re.fullmatch(r"/close(\d+)", cmd)
+                        if m:
+                            n = int(m.group(1))
+                            self._safe_run(lambda n=n: self._cmd_close_position(n))
+                        else:
+                            print(f"  [Telegram] commande inconnue ignoree : {cmd}")
             except requests.exceptions.Timeout:
                 print("  [Telegram] Timeout getUpdates — retry")
             except Exception as e:
@@ -297,7 +308,7 @@ class TelegramCommandHandler:
             val  = sh * cur
             pnl  = val - cost
             pct  = pnl / cost * 100 if cost > 0 else 0
-            rows.append({"pos": pos, "cur": cur, "val": val, "pnl": pnl, "pct": pct})
+            rows.append({"pos": pos, "token_id": tid, "cur": cur, "val": val, "pnl": pnl, "pct": pct})
             total_cost  += cost
             total_value += val
         return rows, total_cost, total_value
@@ -343,28 +354,36 @@ class TelegramCommandHandler:
         p = self._trader.portfolio
         if not p.positions:
             _send("📭 Aucune position ouverte.")
+            self._position_index = {}
             return
         rows, total_cost, total_value = self._positions_with_pnl()
         rows.sort(key=lambda x: x["pnl"], reverse=True)
 
+        # Rebuild index numéroté (utilisé par /closeN)
+        self._position_index = {}
+        for i, r in enumerate(rows, start=1):
+            self._position_index[i] = r["token_id"]
+
         lines = [f"📋 <b>Positions ouvertes ({len(p.positions)} / 60)</b>\n"]
-        for r in rows:
-            pos  = r["pos"]
-            icon = "🟢" if r["pnl"] >= 0 else "🔴"
+        for i, r in enumerate(rows, start=1):
+            pos   = r["pos"]
+            icon  = "🟢" if r["pnl"] >= 0 else "🔴"
             mname = _get_market_name(pos.get("market_id", ""), max_len=45)
+            resol = _fmt_resolution(pos.get("market_id", ""))
+            resol_line = f"\n   {resol}" if resol else ""
             lines.append(
-                f"{icon} <b>{pos['outcome']}</b>  {pos['shares']:.1f} sh\n"
-                f"   📌 {mname}\n"
-                f"   ${pos['avg_cost']:.3f} → ${r['cur']:.3f}  "
-                f"| coût ${pos['total_cost']:.2f}\n"
-                f"   <b>{'+' if r['pnl']>=0 else ''}{r['pnl']:.2f}$ ({r['pct']:+.1f}%)</b>"
+                f"{icon} <b>Position {i} : BUY {pos['outcome']}</b> — {mname}\n"
+                f"   Entrée ${pos['avg_cost']:.3f} | PnL latent "
+                f"<b>{'+' if r['pnl']>=0 else ''}{r['pnl']:.2f}$ ({r['pct']:+.1f}%)</b>{resol_line}\n"
+                f"   ↳ /close{i}"
             )
 
         total_pnl = total_value - total_cost
         total_pct = total_pnl / total_cost * 100 if total_cost > 0 else 0
         lines.append(
             f"\n💼 <b>TOTAL</b>  coût ${total_cost:.2f} | mtm ${total_value:.2f}\n"
-            f"   PnL latent : <b>{'+' if total_pnl>=0 else ''}{total_pnl:.2f}$ ({total_pct:+.1f}%)</b>"
+            f"   PnL latent : <b>{'+' if total_pnl>=0 else ''}{total_pnl:.2f}$ ({total_pct:+.1f}%)</b>\n"
+            f"\n🔥 /closeall — fermer toutes les positions"
         )
 
         msg = "\n".join(lines)
@@ -432,6 +451,67 @@ class TelegramCommandHandler:
             f"  🎯 Win rate latent: {win_rate:.1f}%\n"
             f"  🔢 Total ordres  : {len(p.order_log)}"
         )
+
+    def _close_position_by_token_id(self, token_id: str) -> None:
+        """Ferme une position via SELL au prix midpoint actuel."""
+        from copytrader import SimulatedOrder
+        p   = self._trader.portfolio
+        pos = p.positions.get(token_id)
+        if not pos:
+            _send("⚠️ Position introuvable (déjà fermée ?).")
+            return
+        price = self._trader._fetch_midpoint(token_id)
+        if price is None:
+            price = pos["avg_cost"]
+        order = SimulatedOrder(
+            market_id=pos.get("market_id", ""),
+            token_id=token_id,
+            outcome=pos["outcome"],
+            price=price,
+            size_usdc=pos["total_cost"],
+            side="SELL",
+            wallet_source="telegram-close",
+        )
+        order.shares = pos["shares"]
+        success = p.apply_order(order)
+        if success:
+            pnl = (price - pos["avg_cost"]) * order.shares
+            mname = _get_market_name(pos.get("market_id", ""), max_len=45)
+            icon = "🟢" if pnl >= 0 else "🔴"
+            _send(
+                f"{icon} <b>Position fermée</b>\n"
+                f"  {pos['outcome']} — {mname}\n"
+                f"  SELL @ ${price:.3f} | {order.shares:.2f} shares\n"
+                f"  PnL réalisé : <b>{'+' if pnl>=0 else ''}{pnl:.2f}$</b>"
+            )
+        else:
+            _send("❌ Échec de la fermeture.")
+
+    def _cmd_close_position(self, n: int) -> None:
+        token_id = self._position_index.get(n)
+        if not token_id:
+            _send(
+                f"⚠️ Position {n} introuvable.\n"
+                f"Utilisez /positions pour voir la liste à jour."
+            )
+            return
+        self._close_position_by_token_id(token_id)
+
+    def _cmd_closeall(self) -> None:
+        p = self._trader.portfolio
+        if not p.positions:
+            _send("📭 Aucune position ouverte.")
+            return
+        token_ids = list(p.positions.keys())
+        _send(f"🔥 Fermeture de {len(token_ids)} position(s)…")
+        closed = 0
+        for token_id in token_ids:
+            pos = p.positions.get(token_id)
+            if not pos:
+                continue
+            self._close_position_by_token_id(token_id)
+            closed += 1
+        _send(f"✅ {closed} position(s) fermée(s).")
 
     def _cmd_ping(self) -> None:
         _send("pong — bot actif")
