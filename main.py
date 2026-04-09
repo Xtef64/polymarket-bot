@@ -42,6 +42,7 @@ WALLETS_TO_TRACK = [
     "0xb45a797faa52b0fd8adc56d30382022b7b12192c",  # #12 bcda         — 7 trades/24h, PnL $1.3M
     "0xc8049876db52053426dfb71875a879fbe25ec12b",  # ajouté manuellement
     "0xd1042bcea4113d0d831bf2aad893e820bd2bc79c",  # ajouté manuellement
+    "0x37ccc65cbae317faafb10802a9da1825fe0cc53a",  # ajouté manuellement
 ]
 
 BOT_CONFIG = {
