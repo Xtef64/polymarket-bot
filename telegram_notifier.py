@@ -19,15 +19,16 @@ _clob_session = requests.Session()
 _clob_session.headers.update({"Accept": "application/json", "User-Agent": "polymarket-bot/1.0"})
 
 GAMMA_API          = "https://gamma-api.polymarket.com"
-_market_cache: dict = {}   # conditionId → {"question": str, "end_date": str|None}
+POLYMARKET_BASE    = "https://polymarket.com/market"
+_market_cache: dict = {}   # conditionId → {"question": str, "end_date": str|None, "slug": str|None}
 
 
 def _fetch_market_info(condition_id: str) -> dict:
-    """Appelle Gamma API et retourne {"question": ..., "end_date": ...}.
+    """Appelle Gamma API et retourne {"question": ..., "end_date": ..., "slug": ...}.
     Met le résultat en cache. Retourne des valeurs vides si indisponible."""
     if condition_id in _market_cache:
         return _market_cache[condition_id]
-    info = {"question": "", "end_date": None}
+    info = {"question": "", "end_date": None, "slug": None}
     try:
         r = _clob_session.get(
             f"{GAMMA_API}/markets",
@@ -41,6 +42,7 @@ def _fetch_market_info(condition_id: str) -> dict:
                 m = data[0]
                 info["question"] = m.get("question", "") or ""
                 info["end_date"]  = m.get("endDate") or None
+                info["slug"]      = m.get("slug") or None
                 if info["question"]:          # ne cache que les succès complets
                     _market_cache[condition_id] = info
         else:
@@ -58,6 +60,20 @@ def _get_market_name(condition_id: str, max_len: int = 55) -> str:
     if not name:
         return f"{condition_id[:10]}…"
     return name[:max_len] + "…" if len(name) > max_len else name
+
+
+def _get_market_link(condition_id: str, max_len: int = 50) -> str:
+    """Retourne un lien HTML cliquable vers la page Polymarket du marché.
+    Fallback sur le nom seul si le slug est indisponible."""
+    if not condition_id:
+        return "?"
+    info  = _fetch_market_info(condition_id)
+    name  = info.get("question", "") or f"{condition_id[:10]}…"
+    label = (name[:max_len] + "…") if len(name) > max_len else name
+    slug  = info.get("slug")
+    if slug:
+        return f'<a href="{POLYMARKET_BASE}/{slug}">{label}</a>'
+    return label
 
 
 def _fmt_resolution(condition_id: str) -> str:
@@ -368,15 +384,18 @@ class TelegramCommandHandler:
         for i, r in enumerate(rows, start=1):
             pos   = r["pos"]
             icon  = "🟢" if r["pnl"] >= 0 else "🔴"
-            mname = _get_market_name(pos.get("market_id", ""), max_len=45)
+            mlink = _get_market_link(pos.get("market_id", ""), max_len=45)
             resol = _fmt_resolution(pos.get("market_id", ""))
-            resol_line = f"\n   {resol}" if resol else ""
-            lines.append(
-                f"{icon} <b>Position {i} : BUY {pos['outcome']}</b> — {mname}\n"
-                f"   Entrée ${pos['avg_cost']:.3f} | PnL latent "
-                f"<b>{'+' if r['pnl']>=0 else ''}{r['pnl']:.2f}$ ({r['pct']:+.1f}%)</b>{resol_line}\n"
-                f"   ↳ /close{i}"
-            )
+            pnl_str = f"{'+' if r['pnl']>=0 else ''}{r['pnl']:.2f}$ ({r['pct']:+.1f}%)"
+            parts = [
+                f"{icon} <b>Position {i} : BUY {pos['outcome']}</b> — {mlink}",
+                f"Entrée ${pos['avg_cost']:.3f}",
+                f"PnL latent <b>{pnl_str}</b>",
+            ]
+            if resol:
+                parts.append(resol)
+            parts.append(f"/close{i}")
+            lines.append(" | ".join(parts))
 
         total_pnl = total_value - total_cost
         total_pct = total_pnl / total_cost * 100 if total_cost > 0 else 0
