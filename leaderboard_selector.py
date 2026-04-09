@@ -28,8 +28,8 @@ MIN_RECENT_TRADES  = 3    # trades recents minimum pour etre considere "actif"
 RECENT_HOURS       = 72   # fenetre d'activite recente (heures)
 
 # Criteres de remplacement automatique (evalue chaque heure)
-INACTIVE_MAX_TRADES_1H = 0   # trades dans la derniere heure en-dessous duquel = inactif
-INACTIVE_MAX_PNL       = 0.0 # PnL mensuel en-dessous duquel (combiné avec trades) = inactif
+INACTIVE_MAX_TRADES_1H = 2   # < 3 trades dans la derniere heure → inactif (si PnL=0)
+INACTIVE_MAX_PNL       = 0.0 # PnL mensuel <= 0 → combiné avec trades/1h pour décider
 
 
 # -- Helpers ------------------------------------------------------------------
