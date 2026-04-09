@@ -257,12 +257,6 @@ def _run_selection(tracker, perf: dict, tg_send=None) -> None:
         if addr in keep_set or pnl <= INACTIVE_MAX_PNL:
             continue
 
-        trades_1h = _count_recent_trades(addr, hours=1)
-        if trades_1h <= INACTIVE_MAX_TRADES_1H:
-            print(f"    #{rank} {username}: PnL=${pnl:,.0f} mais 0 trade/1h — ignore")
-            time.sleep(0.2)
-            continue
-
         old = inactive_q.pop(0)
         replacements.append({
             "old_wallet": old,
@@ -270,7 +264,7 @@ def _run_selection(tracker, perf: dict, tg_send=None) -> None:
             "pnl":        pnl,
             "username":   username,
             "rank":       rank,
-            "trades_1h":  trades_1h,
+            "trades_1h":  0,
         })
         keep_set.add(addr)
         print(f"    #{rank} {username} ({addr[:12]}...): {trades_1h} trade(s)/1h "
