@@ -43,6 +43,8 @@ WALLETS_TO_TRACK = [
     "0xc8049876db52053426dfb71875a879fbe25ec12b",  # ajouté manuellement
     "0xd1042bcea4113d0d831bf2aad893e820bd2bc79c",  # ajouté manuellement
     "0x37ccc65cbae317faafb10802a9da1825fe0cc53a",  # ajouté manuellement
+    "0x1fa9b794a9191a05f66ceb34da1f7c6aa6571fa9",  # ajouté manuellement
+    "0xa4ed238c0ba0957b5835f47eed15ec3974a2d010",  # ajouté manuellement
 ]
 
 BOT_CONFIG = {
