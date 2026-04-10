@@ -40,11 +40,19 @@ def _fetch_market_info(condition_id: str) -> dict:
             r.close()
             if isinstance(data, list) and data:
                 m = data[0]
-                info["question"] = m.get("question", "") or ""
-                info["end_date"]  = m.get("endDate") or None
-                info["slug"]      = m.get("slug") or None
-                if info["question"]:          # ne cache que les succès complets
-                    _market_cache[condition_id] = info
+                # Vérifie que le marché retourné correspond bien à l'ID demandé.
+                # Si la Gamma API reçoit un ID invalide (ex: token_id décimal),
+                # elle retourne tous les marchés par défaut — data[0] serait alors
+                # un marché aléatoire (bug "Russia-Ukraine pour un trade tennis").
+                returned_cid = (m.get("conditionId") or "").lower()
+                if returned_cid != condition_id.lower():
+                    print(f"  [market_cache] ID non concordant — demandé={condition_id[:14]}… retourné={returned_cid[:14]}… (skipped)")
+                else:
+                    info["question"] = m.get("question", "") or ""
+                    info["end_date"]  = m.get("endDate") or None
+                    info["slug"]      = m.get("slug") or None
+                    if info["question"]:          # ne cache que les succès complets
+                        _market_cache[condition_id] = info
         else:
             r.close()
     except Exception:

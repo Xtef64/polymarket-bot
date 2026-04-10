@@ -198,7 +198,12 @@ class CopyTrader:
             if r.status_code == 200:
                 data = r.json()
                 r.close()
-                end_date = data[0].get("endDate") if isinstance(data, list) and data else None
+                # Vérifie que le marché retourné correspond à l'ID demandé
+                # (la Gamma API renvoie tous les marchés si condition_id est invalide)
+                m0 = data[0] if isinstance(data, list) and data else None
+                end_date = None
+                if m0 and (m0.get("conditionId") or "").lower() == condition_id.lower():
+                    end_date = m0.get("endDate")
                 if end_date is not None:
                     # Ne cache QUE les succès — les None sont retentés au prochain cycle
                     self._end_date_cache[condition_id] = end_date
