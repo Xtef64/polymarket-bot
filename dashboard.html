@@ -776,10 +776,22 @@ function renderKPIs(d) {
   const sec      = Math.floor((Date.now()-started)/1000);
   const rh=Math.floor(sec/3600), rm=Math.floor((sec%3600)/60), rs=sec%60;
   const initBal  = meta.initial_balance || 300;
-  const nw=summary.net_worth??initBal, ret=summary.return_pct??0;
+  // Net Worth : cash + valeur mark-to-market des positions ouvertes (dernier cycle)
+  const lastCycle = cycles.length ? cycles[cycles.length - 1] : {};
+  const openPos = lastCycle.open_positions || [];
+  const posValue = openPos.reduce((sum, p) => {
+    const v = p.current_value ?? (p.shares * (p.current_price ?? p.avg_cost));
+    return sum + (v || 0);
+  }, 0);
+  const cashUsdc = summary.cash_usdc ?? initBal;
+  const nw = openPos.length > 0 ? cashUsdc + posValue : (summary.net_worth ?? initBal);
+  const ret = initBal > 0 ? (nw - initBal) / initBal * 100 : 0;
   document.getElementById('kv-nw').innerHTML   = `<span class="${clsPct(ret)}">${fmt$(nw)}</span>`;
   document.getElementById('ks-ret').innerHTML  = `<span class="${clsPct(ret)}">${fmtPct(ret)}</span> vs $${initBal.toLocaleString('fr-FR')}`;
-  const pnl=summary.realized_pnl??0;
+  // PnL réalisé : somme des trades SELL fermés uniquement (depuis trade_history)
+  const pnl = (d.trade_history || [])
+    .filter(t => t.side === 'SELL' && t.realized_pnl != null)
+    .reduce((sum, t) => sum + t.realized_pnl, 0);
   document.getElementById('kv-pnl').innerHTML  = `<span class="${clsPct(pnl)}">${fmt$(pnl)}</span>`;
   document.getElementById('ks-orders').textContent = `${summary.total_orders??0} ordres simulés`;
   document.getElementById('kv-cash').textContent   = fmt$(summary.cash_usdc??initBal);
