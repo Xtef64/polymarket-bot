@@ -196,18 +196,30 @@ def leaderboard_refresh_loop(
     stop_event.wait(timeout=30)  # laisse le 1er cycle de trading s'executer
 
     while not stop_event.is_set():
+        ts_start = datetime.now(timezone.utc)
         try:
-            _run_selection(tracker, perf, tg_send)
+            changed, n_replaced, n_kept = _run_selection(tracker, perf, tg_send)
         except Exception as e:
             print(f"  [Leaderboard] Erreur inattendue : {e}")
+            changed, n_replaced, n_kept = False, 0, len(tracker.wallets)
+
+        # Log horaire de confirmation (visible dans les logs Railway)
+        ts_end    = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        tag       = f"{n_replaced} remplace(s)" if changed else "aucun changement"
+        print(
+            f"\n  [Leaderboard] ✓ Scan {ts_end} UTC — "
+            f"{n_kept} wallet(s) actif(s), {tag} | "
+            f"prochain scan dans {interval_h}h"
+        )
 
         # Attendre interval_h heures avant le prochain rafraichissement
         stop_event.wait(timeout=interval_h * 3600)
 
 
-def _run_selection(tracker, perf: dict, tg_send=None) -> None:
+def _run_selection(tracker, perf: dict, tg_send=None) -> tuple[bool, int, int]:
     """Evalue chaque wallet suivi. Remplace ceux qui sont inactifs
-    (PnL=0 ET 0 trade dans la derniere heure) par de nouveaux candidats."""
+    (PnL=0 ET 0 trade dans la derniere heure) par de nouveaux candidats.
+    Retourne (changed, n_replaced, n_kept)."""
     now     = datetime.now(timezone.utc).isoformat()
     current = list(tracker.wallets)
 
@@ -234,7 +246,7 @@ def _run_selection(tracker, perf: dict, tg_send=None) -> None:
     if not inactive:
         print(f"  [Leaderboard] Tous les wallets actifs — aucun remplacement")
         _log_selection(perf, [], now, changed=False)
-        return
+        return False, 0, len(current)
 
     print(f"  [Leaderboard] {len(inactive)} wallet(s) inactif(s) a remplacer")
 
@@ -280,7 +292,7 @@ def _run_selection(tracker, perf: dict, tg_send=None) -> None:
     if not replacements:
         print("  [Leaderboard] Aucun remplacant eligible trouve — liste inchangee")
         _log_selection(perf, [], now, changed=False)
-        return
+        return False, 0, len(current)
 
     # 4. Applique les remplacements (preserves l'ordre, remplace en place)
     replace_map = {r["old_wallet"].lower(): r["new_wallet"] for r in replacements}
@@ -297,6 +309,8 @@ def _run_selection(tracker, perf: dict, tg_send=None) -> None:
               f"({r['new_wallet'][:12]}...) PnL=${r['pnl']:,.0f}")
 
     _log_selection(perf, replacements, now, changed=True)
+    n_replaced = len(replacements)
+    n_kept     = len(current) - n_replaced
 
     # 5. Notification Telegram
     if tg_send:
@@ -313,6 +327,8 @@ def _run_selection(tracker, perf: dict, tg_send=None) -> None:
             tg_send("\n".join(lines))
         except Exception:
             pass
+
+    return True, n_replaced, n_kept
 
 
 def _log_selection(perf: dict, replacements: list[dict], ts: str,

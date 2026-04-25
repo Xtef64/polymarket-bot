@@ -22,11 +22,12 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from wallet_tracker     import WalletTracker
-from market_analyzer    import MarketAnalyzer
-from copytrader         import CopyTrader
-from serve              import start_server_thread
-from telegram_notifier  import (
+from wallet_tracker        import WalletTracker
+from market_analyzer       import MarketAnalyzer
+from copytrader            import CopyTrader
+from serve                 import start_server_thread
+from leaderboard_selector  import leaderboard_refresh_loop
+from telegram_notifier     import (
     TelegramCommandHandler, notify_start, notify_stop,
     notify_trade, notify_cycle, _send as tg_send,
 )
@@ -713,6 +714,17 @@ def main() -> None:
         name="price-refresher",
     )
     price_thread.start()
+
+    # Thread de sélection automatique des wallets (toutes les heures)
+    leaderboard_thread = threading.Thread(
+        target=leaderboard_refresh_loop,
+        args=(tracker, perf, stop_event),
+        kwargs={"tg_send": tg_send},
+        daemon=True,
+        name="leaderboard-selector",
+    )
+    leaderboard_thread.start()
+    print("  >> Thread leaderboard-selector demarre (scan toutes les 1h)")
 
     # ── Gestionnaire SIGTERM (Railway arrête proprement avant de tuer) ──────────
     def _handle_sigterm(signum, frame):
