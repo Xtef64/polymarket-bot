@@ -49,6 +49,12 @@ WALLETS_TO_TRACK = [
     "0x0006a661f1a09e9e0670943bcd4fc3b830238c63",  # ajouté manuellement
 ]
 
+# Wallets explicitement exclus du suivi (mauvaises performances en copie)
+# Le leaderboard_selector ne les sélectionnera jamais non plus.
+EXCLUDED_WALLETS: set[str] = {
+    "0x204f72f35326db932158cba6adff0b9a1da95e14",  # swisstony — PnL copie négatif
+}
+
 BOT_CONFIG = {
     "poll_interval_sec":  30,   # réduit 60→30s : capture les trades sports avant résolution
     "top_markets_limit":  30,   # réduit de 50 → 30 pour économiser mémoire
@@ -691,19 +697,20 @@ def main() -> None:
     perf  = load_perf()
     cycle = perf.get("summary", {}).get("total_cycles", 0)
 
-    # Synchronise tracker.wallets depuis perf (préserve les remplacements leaderboard)
-    # + ajoute tout wallet de WALLETS_TO_TRACK absent de la liste sauvegardée
-    saved_wallets = perf["meta"].get("wallets") or list(WALLETS_TO_TRACK)
+    # Wallets actifs : si performance.json en a sauvegardé → utilise UNIQUEMENT ceux-là.
+    # Sinon → WALLETS_TO_TRACK comme fallback (premier démarrage ou après BOT_RESET).
+    # Dans tous les cas, filtre EXCLUDED_WALLETS.
+    excluded_lower = {w.lower() for w in EXCLUDED_WALLETS}
+    saved_wallets  = perf["meta"].get("wallets")
+    base_wallets   = saved_wallets if saved_wallets else list(WALLETS_TO_TRACK)
+    active_wallets = [w for w in base_wallets if w.lower() not in excluded_lower]
     with tracker._wallets_lock:
-        existing_lower = {w.lower() for w in saved_wallets}
-        for w in WALLETS_TO_TRACK:
-            if w.lower() not in existing_lower:
-                saved_wallets.append(w)
-                existing_lower.add(w.lower())
-        tracker.wallets = saved_wallets
-    perf["meta"]["wallets"] = list(tracker.wallets)
-    print(f"  >> Wallets actifs : {len(tracker.wallets)} "
-          f"({', '.join(w[:10]+'...' for w in tracker.wallets[:3])}{'...' if len(tracker.wallets)>3 else ''})")
+        tracker.wallets = active_wallets
+    perf["meta"]["wallets"] = active_wallets
+    src_label = "sauvegardes" if saved_wallets else "WALLETS_TO_TRACK (fallback)"
+    excl = len(base_wallets) - len(active_wallets)
+    print(f"  >> Wallets actifs : {len(active_wallets)} ({src_label}"
+          f"{f', {excl} exclu(s)' if excl else ''})")
 
     # Restaure les positions depuis le dernier cycle sauvegardé
     _restore_portfolio(trader, perf)
@@ -732,7 +739,7 @@ def main() -> None:
     leaderboard_thread = threading.Thread(
         target=leaderboard_refresh_loop,
         args=(tracker, perf, stop_event),
-        kwargs={"tg_send": tg_send},
+        kwargs={"tg_send": tg_send, "excluded_wallets": EXCLUDED_WALLETS},
         daemon=True,
         name="leaderboard-selector",
     )

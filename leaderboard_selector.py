@@ -188,17 +188,19 @@ def leaderboard_refresh_loop(
     stop_event: threading.Event,
     interval_h: int = REFRESH_INTERVAL_H,
     tg_send=None,                   # fonction optionnelle pour notifier Telegram
+    excluded_wallets: set = None,   # adresses jamais sélectionnées ni conservées
 ) -> None:
     """
     Thread daemon : rafraichit la selection des wallets toutes les interval_h heures.
     Premier run des le demarrage (apres 30s pour laisser le bot s'initialiser).
     """
+    excluded_lower = {w.lower() for w in (excluded_wallets or set())}
     stop_event.wait(timeout=30)  # laisse le 1er cycle de trading s'executer
 
     while not stop_event.is_set():
         ts_start = datetime.now(timezone.utc)
         try:
-            changed, n_replaced, n_kept = _run_selection(tracker, perf, tg_send)
+            changed, n_replaced, n_kept = _run_selection(tracker, perf, tg_send, excluded_lower)
         except Exception as e:
             print(f"  [Leaderboard] Erreur inattendue : {e}")
             changed, n_replaced, n_kept = False, 0, len(tracker.wallets)
@@ -222,13 +224,15 @@ def leaderboard_refresh_loop(
         stop_event.wait(timeout=interval_h * 3600)
 
 
-def _run_selection(tracker, perf: dict, tg_send=None) -> tuple[bool, int, int]:
+def _run_selection(tracker, perf: dict, tg_send=None,
+                   excluded_lower: set = None) -> tuple[bool, int, int]:
     """Evalue chaque wallet suivi. Remplace ceux qui sont inactifs
     (PnL=0 ET 0 trade dans la derniere heure) par de nouveaux candidats.
     Retourne (changed, n_replaced, n_kept)."""
+    excluded_lower = excluded_lower or set()
     now = datetime.now(timezone.utc).isoformat()
     with tracker._wallets_lock:
-        current = list(tracker.wallets)
+        current = [w for w in tracker.wallets if w.lower() not in excluded_lower]
 
     print(f"\n  [Leaderboard] Evaluation des {len(current)} wallets suivis...")
 
@@ -273,7 +277,7 @@ def _run_selection(tracker, perf: dict, tg_send=None) -> tuple[bool, int, int]:
 
         if not addr or len(addr) != 42:
             continue
-        if addr in keep_set or pnl <= INACTIVE_MAX_PNL:
+        if addr in keep_set or addr in excluded_lower or pnl <= INACTIVE_MAX_PNL:
             continue
 
         trades_1h = _count_recent_trades(addr, hours=1)
