@@ -262,16 +262,23 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         old_c.pop("last_orders", None)
         old_c.pop("top_markets", None)
 
+    # Net worth maximum atteint — mis à jour si dépassé, jamais réduit, préservé au reset
+    current_nw  = portfolio.net_worth()
+    saved_max   = data.get("meta", {}).get("net_worth_max", BOT_CONFIG["initial_balance"])
+    new_max     = max(saved_max, current_nw)
+    data.setdefault("meta", {})["net_worth_max"] = round(new_max, 4)
+
     # Résumé global mis à jour
     data["summary"] = {
         "last_update":      now,
         "total_cycles":     cycle,
         "total_orders":     portfolio.total_orders_count,
-        "net_worth":        portfolio.net_worth(),
+        "net_worth":        current_nw,
+        "net_worth_max":    round(new_max, 4),
         "cash_usdc":        round(portfolio.balance_usdc, 4),
         "realized_pnl":     round(portfolio.realized_pnl, 4),
         "return_pct":       round(
-            (portfolio.net_worth() - BOT_CONFIG["initial_balance"])
+            (current_nw - BOT_CONFIG["initial_balance"])
             / BOT_CONFIG["initial_balance"] * 100, 4
         ),
         "open_positions":   len(portfolio.positions),
@@ -655,18 +662,36 @@ def run_cycle(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Polymarket Copy Trading Bot")
-    parser.add_argument("--live",  action="store_true", help="Active les ordres reels (DANGEREUX)")
+    parser.add_argument("--live",   action="store_true", help="Active les ordres reels (DANGEREUX)")
     parser.add_argument("--cycles", type=int, default=0, help="Nombre de cycles (0 = infini)")
-    parser.add_argument("--reset", action="store_true", help="Repart de zero (efface performance.json)")
     args = parser.parse_args()
 
     dry_run = not args.live
 
-    # Optionnel : reset complet du state (performance.json)
-    if args.reset or os.environ.get("BOT_RESET", "").lower() in ("1", "true", "yes"):
+    # Reset du state de trading — UNIQUEMENT via variable d'environnement Railway (jamais par le code).
+    # Préserve net_worth_max et les métadonnées pour ne jamais perdre l'historique de performance.
+    if os.environ.get("BOT_RESET", "").lower() in ("1", "true", "yes"):
+        preserved_max = 0.0
         if os.path.exists(PERF_FILE):
-            os.remove(PERF_FILE)
-            print("  >> [RESET] performance.json supprime — nouveau depart avec $300")
+            try:
+                with open(PERF_FILE, "r", encoding="utf-8") as f:
+                    old_perf = json.load(f)
+                preserved_max = old_perf.get("meta", {}).get("net_worth_max", 0.0)
+            except Exception:
+                pass
+        fresh = {
+            "meta": {
+                "started_at":    datetime.now(timezone.utc).isoformat(),
+                "initial_balance": BOT_CONFIG["initial_balance"],
+                "wallets":       list(WALLETS_TO_TRACK),
+                "net_worth_max": preserved_max,   # jamais perdu
+            },
+            "cycles":  [],
+            "summary": {},
+        }
+        with open(PERF_FILE, "w", encoding="utf-8") as f:
+            json.dump(fresh, f, separators=(",", ":"), ensure_ascii=False)
+        print(f"  >> [RESET] Portfolio remis a zero — net_worth_max=${preserved_max:.2f} preserve")
 
     # ── Serveur dashboard démarré EN PREMIER pour passer le health check Railway ──
     dashboard_port = int(os.environ.get("PORT", 8765))
