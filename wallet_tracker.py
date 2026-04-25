@@ -6,6 +6,7 @@ Session HTTP persistante + cache positions (fetch tous les 5 cycles).
 
 import requests
 import time
+import threading
 from datetime import datetime
 
 GAMMA_API = "https://gamma-api.polymarket.com"
@@ -109,6 +110,7 @@ class WalletTracker:
 
     def __init__(self, wallets: list[str]):
         self.wallets = wallets
+        self._wallets_lock = threading.Lock()  # protège wallets contre les accès concurrents
         self._last_trades: dict[str, list] = {}
         self._last_positions: dict[str, dict] = {}  # wallet → {market_key: position}
         self._snapshot_count = 0
@@ -124,8 +126,11 @@ class WalletTracker:
         """Prend un snapshot COMPLET à chaque cycle.
         Les positions sont fetchées à chaque cycle pour détecter les changements en temps réel."""
         self._snapshot_count += 1
+        # Copie thread-safe de la liste avant d'itérer (le leaderboard thread peut modifier wallets)
+        with self._wallets_lock:
+            wallets_snapshot = list(self.wallets)
         data = {}
-        for wallet in self.wallets:
+        for wallet in wallets_snapshot:
             try:
                 positions = get_positions(wallet)
                 trades    = get_trade_history(wallet, limit=20)

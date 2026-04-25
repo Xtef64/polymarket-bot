@@ -220,8 +220,9 @@ def _run_selection(tracker, perf: dict, tg_send=None) -> tuple[bool, int, int]:
     """Evalue chaque wallet suivi. Remplace ceux qui sont inactifs
     (PnL=0 ET 0 trade dans la derniere heure) par de nouveaux candidats.
     Retourne (changed, n_replaced, n_kept)."""
-    now     = datetime.now(timezone.utc).isoformat()
-    current = list(tracker.wallets)
+    now = datetime.now(timezone.utc).isoformat()
+    with tracker._wallets_lock:
+        current = list(tracker.wallets)
 
     print(f"\n  [Leaderboard] Evaluation des {len(current)} wallets suivis...")
 
@@ -299,9 +300,11 @@ def _run_selection(tracker, perf: dict, tg_send=None) -> tuple[bool, int, int]:
     new_wallets = [replace_map.get(w.lower(), w) for w in current]
 
     removed_set = {r["old_wallet"] for r in replacements}
-    tracker.wallets         = new_wallets
-    tracker._last_trades    = {w: v for w, v in tracker._last_trades.items()    if w not in removed_set}
-    tracker._last_positions = {w: v for w, v in tracker._last_positions.items() if w not in removed_set}
+    # Verrou : empêche snapshot() de lire wallets pendant la mise à jour
+    with tracker._wallets_lock:
+        tracker.wallets         = new_wallets
+        tracker._last_trades    = {w: v for w, v in tracker._last_trades.items()    if w not in removed_set}
+        tracker._last_positions = {w: v for w, v in tracker._last_positions.items() if w not in removed_set}
 
     print(f"\n  [Leaderboard] {len(replacements)} wallet(s) remplace(s) :")
     for r in replacements:

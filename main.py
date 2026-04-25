@@ -295,14 +295,10 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
     saved_cash = summary.get("cash_usdc", BOT_CONFIG["initial_balance"])
     trader.portfolio.balance_usdc = saved_cash
 
-    # Recalcule realized_pnl depuis trade_history (source de vérité)
-    # — évite la dérive cumulative causée par les trades re-traités après chaque restart
-    realized_from_history = sum(
-        float(t.get("realized_pnl") or 0)
-        for t in perf.get("trade_history", [])
-        if t.get("realized_pnl") is not None
-    )
-    trader.portfolio.realized_pnl = realized_from_history
+    # Restaure le PnL réalisé depuis le summary (valeur cumulée, toujours à jour)
+    # Note : _last_wallet_trades évite désormais les trades re-traités au restart,
+    # donc la valeur du summary reste fiable entre les sessions.
+    trader.portfolio.realized_pnl = summary.get("realized_pnl", 0.0)
 
     # Garde-fou anti-bug : si le PnL réalisé dépasse 10× le capital initial, c'est aberrant
     max_pnl = BOT_CONFIG["initial_balance"] * 10
@@ -564,7 +560,7 @@ def run_cycle(
         seen_keys = set()
         new_trades = []
         for t in trades_from_history + trades_from_positions:
-            k = f"{t.get('conditionId','')[:16]}|{t.get('side','')}|{t.get('outcome','')}"
+            k = f"{t.get('conditionId','')}|{t.get('side','')}|{t.get('outcome','')}"
             if k not in seen_keys:
                 seen_keys.add(k)
                 new_trades.append(t)
