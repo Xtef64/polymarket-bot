@@ -211,6 +211,12 @@ def leaderboard_refresh_loop(
             f"{n_kept} wallet(s) actif(s), {tag} | "
             f"prochain scan dans {interval_h}h"
         )
+        # Liste complète des wallets actifs après chaque refresh
+        with tracker._wallets_lock:
+            active = list(tracker.wallets)
+        print(f"  [Leaderboard] Wallets actifs ({len(active)}) :")
+        for i, w in enumerate(active, 1):
+            print(f"    {i:2d}. {w}")
 
         # Attendre interval_h heures avant le prochain rafraichissement
         stop_event.wait(timeout=interval_h * 3600)

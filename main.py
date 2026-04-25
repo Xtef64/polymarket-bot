@@ -80,15 +80,10 @@ def load_perf() -> dict:
         try:
             with open(PERF_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Fusionne les wallets sauvegardés avec WALLETS_TO_TRACK :
-            # — préserve les remplacements effectués par le leaderboard entre les restarts
-            # — intègre les nouveaux wallets ajoutés manuellement à la config
-            saved_wallets = data.setdefault("meta", {}).get("wallets") or []
-            merged = list(saved_wallets)
-            for w in WALLETS_TO_TRACK:
-                if w not in merged:
-                    merged.append(w)
-            data["meta"]["wallets"] = merged
+            # Conserve la liste sauvegardée telle quelle (inclut les remplacements leaderboard)
+            # Les wallets manuels de WALLETS_TO_TRACK sont fusionnés plus bas,
+            # après la création du tracker (main → _sync_tracker_wallets)
+            data.setdefault("meta", {}).setdefault("wallets", list(WALLETS_TO_TRACK))
             data["meta"]["initial_balance"] = BOT_CONFIG["initial_balance"]
             data.setdefault("summary", {})
             data.setdefault("cycles", [])
@@ -695,6 +690,20 @@ def main() -> None:
 
     perf  = load_perf()
     cycle = perf.get("summary", {}).get("total_cycles", 0)
+
+    # Synchronise tracker.wallets depuis perf (préserve les remplacements leaderboard)
+    # + ajoute tout wallet de WALLETS_TO_TRACK absent de la liste sauvegardée
+    saved_wallets = perf["meta"].get("wallets") or list(WALLETS_TO_TRACK)
+    with tracker._wallets_lock:
+        existing_lower = {w.lower() for w in saved_wallets}
+        for w in WALLETS_TO_TRACK:
+            if w.lower() not in existing_lower:
+                saved_wallets.append(w)
+                existing_lower.add(w.lower())
+        tracker.wallets = saved_wallets
+    perf["meta"]["wallets"] = list(tracker.wallets)
+    print(f"  >> Wallets actifs : {len(tracker.wallets)} "
+          f"({', '.join(w[:10]+'...' for w in tracker.wallets[:3])}{'...' if len(tracker.wallets)>3 else ''})")
 
     # Restaure les positions depuis le dernier cycle sauvegardé
     _restore_portfolio(trader, perf)
