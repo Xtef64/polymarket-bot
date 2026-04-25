@@ -80,8 +80,15 @@ def load_perf() -> dict:
         try:
             with open(PERF_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Toujours synchroniser wallets et initial_balance avec la config actuelle
-            data.setdefault("meta", {})["wallets"] = WALLETS_TO_TRACK
+            # Fusionne les wallets sauvegardés avec WALLETS_TO_TRACK :
+            # — préserve les remplacements effectués par le leaderboard entre les restarts
+            # — intègre les nouveaux wallets ajoutés manuellement à la config
+            saved_wallets = data.setdefault("meta", {}).get("wallets") or []
+            merged = list(saved_wallets)
+            for w in WALLETS_TO_TRACK:
+                if w not in merged:
+                    merged.append(w)
+            data["meta"]["wallets"] = merged
             data["meta"]["initial_balance"] = BOT_CONFIG["initial_balance"]
             data.setdefault("summary", {})
             data.setdefault("cycles", [])

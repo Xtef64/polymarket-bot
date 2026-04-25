@@ -306,6 +306,9 @@ def _run_selection(tracker, perf: dict, tg_send=None) -> tuple[bool, int, int]:
         tracker._last_trades    = {w: v for w, v in tracker._last_trades.items()    if w not in removed_set}
         tracker._last_positions = {w: v for w, v in tracker._last_positions.items() if w not in removed_set}
 
+    # Synchronise perf["meta"]["wallets"] → persisté par save_perf + lu par le dashboard
+    perf.setdefault("meta", {})["wallets"] = new_wallets
+
     print(f"\n  [Leaderboard] {len(replacements)} wallet(s) remplace(s) :")
     for r in replacements:
         print(f"    - {r['old_wallet'][:12]}... → #{r['rank']} {r['username']} "
