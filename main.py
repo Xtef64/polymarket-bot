@@ -184,6 +184,12 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         for k in list(market_names.keys())[:excess]:
             del market_names[k]
 
+    # Sauvegarde les derniers trades connus par wallet — empêche le re-traitement au redémarrage
+    data["_last_wallet_trades"] = {
+        wallet: wdata.get("recent_trades", [])[:20]
+        for wallet, wdata in snapshot.items()
+    }
+
     # Historique cumulatif des trades (capped 500) — alimente le graphique PnL
     trade_history = data.setdefault("trade_history", [])
     existing_ids  = {t.get("order_id") for t in trade_history}
@@ -287,7 +293,25 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
     # Restaure les compteurs depuis le summary (toujours présent)
     saved_cash = summary.get("cash_usdc", BOT_CONFIG["initial_balance"])
     trader.portfolio.balance_usdc = saved_cash
-    trader.portfolio.realized_pnl = summary.get("realized_pnl", 0.0)
+
+    # Recalcule realized_pnl depuis trade_history (source de vérité)
+    # — évite la dérive cumulative causée par les trades re-traités après chaque restart
+    realized_from_history = sum(
+        float(t.get("realized_pnl") or 0)
+        for t in perf.get("trade_history", [])
+        if t.get("realized_pnl") is not None
+    )
+    trader.portfolio.realized_pnl = realized_from_history
+
+    # Garde-fou anti-bug : si le PnL réalisé dépasse 10× le capital initial, c'est aberrant
+    max_pnl = BOT_CONFIG["initial_balance"] * 10
+    if abs(trader.portfolio.realized_pnl) > max_pnl:
+        print(
+            f"  [SANITY] PnL realise aberrant (${trader.portfolio.realized_pnl:.2f}) "
+            f"— depasse 10x le capital (${max_pnl:.0f}) — remis a zero"
+        )
+        trader.portfolio.realized_pnl = 0.0
+
     trader.portfolio.total_orders_count = summary.get("total_orders", 0)
 
     # Cherche open_positions dans les cycles (du plus récent au plus ancien)
@@ -669,6 +693,14 @@ def main() -> None:
 
     # Restaure les positions depuis le dernier cycle sauvegardé
     _restore_portfolio(trader, perf)
+
+    # Restaure _last_trades du WalletTracker — empêche les faux "nouveaux trades"
+    # causés par la réinitialisation de _last_trades à chaque restart
+    saved_wallet_trades = perf.get("_last_wallet_trades", {})
+    if saved_wallet_trades:
+        tracker._last_trades = {w: list(trades) for w, trades in saved_wallet_trades.items()}
+        n = sum(len(v) for v in tracker._last_trades.values())
+        print(f"  >> Trades wallets restaures : {n} entrees ({len(tracker._last_trades)} wallets)")
 
     stop_event = threading.Event()
     started_at = datetime.now(timezone.utc)
