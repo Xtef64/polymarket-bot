@@ -239,6 +239,12 @@ def _run_selection(tracker, perf: dict, tg_send=None,
     # 1. PnL mensuel de chaque wallet suivi (1 appel leaderboard)
     pnl_map = _get_wallets_pnl(current)
 
+    # Persiste le PnL réel Polymarket de chaque wallet → utilisé par le dashboard
+    # (clés en lowercase pour la cohérence avec le reste du code)
+    perf.setdefault("meta", {})["wallets_pnl"] = pnl_map
+    print(f"  [Leaderboard] PnL Polymarket (mensuel) : "
+          + ", ".join(f"{a[:10]}…=${v:,.0f}" for a, v in list(pnl_map.items())[:5]))
+
     # 2. Identifie les wallets inactifs
     inactive = []
     for wallet in current:

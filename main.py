@@ -115,13 +115,17 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
     portfolio = trader.portfolio
 
     # Snapshot wallets
+    # PnL affiché : PnL Polymarket officiel (mensuel, depuis leaderboard_selector)
+    # en priorité sur le PnL calculé localement (qui ne couvre que les positions ouvertes).
+    wallets_pnl = data.get("meta", {}).get("wallets_pnl", {})
     wallets_state = {}
     for wallet, wdata in snapshot.items():
-        pnl = wdata.get("pnl", {})
+        pnl_local = wdata.get("pnl", {})
+        pnl_real  = wallets_pnl.get(wallet.lower())   # None si pas encore fetchée
         wallets_state[wallet] = {
             "open_positions": len(wdata.get("positions", [])),
-            "pnl":    pnl.get("profit", None),
-            "volume": pnl.get("volume", None),
+            "pnl":    pnl_real if pnl_real is not None else pnl_local.get("profit", None),
+            "volume": pnl_local.get("volume", None),
         }
 
     # Top 5 marchés (inclut conditionId pour le lookup dashboard)
