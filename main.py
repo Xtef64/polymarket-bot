@@ -62,7 +62,7 @@ BOT_CONFIG = {
     "top_markets_limit":  30,   # réduit de 50 → 30 pour économiser mémoire
     "top_markets_display": 10,
     "trade_size_usdc":    10.0,
-    "initial_balance":  300.0,
+    "initial_balance":   50.0,
     "max_positions":      20,   # réduit de 80 → 20 max
     "min_volume_24h":  5_000.0,
     "min_score":          4.0,
@@ -234,6 +234,12 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
     if len(trade_history) > 500:
         data["trade_history"] = trade_history[-500:]
 
+    # PnL réalisé = somme des (prix_sortie - prix_entrée) × shares pour chaque SELL
+    _realized = round(sum(
+        float(t["realized_pnl"]) for t in data.get("trade_history", [])
+        if t.get("side") == "SELL" and t.get("realized_pnl") is not None
+    ), 4)
+
     cycle_entry = {
         "cycle":          cycle,
         "timestamp":      now,
@@ -242,7 +248,7 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         "portfolio": {
             "cash_usdc":      round(portfolio.balance_usdc, 4),
             "net_worth":      portfolio.net_worth(),
-            "realized_pnl":   round(portfolio.realized_pnl, 4),
+            "realized_pnl":   _realized,
             "open_positions": len(portfolio.positions),
             "total_orders":   portfolio.total_orders_count,
             "return_pct":     round(
@@ -282,7 +288,7 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         "net_worth":        current_nw,
         "net_worth_max":    round(new_max, 4),
         "cash_usdc":        round(portfolio.balance_usdc, 4),
-        "realized_pnl":     round(portfolio.realized_pnl, 4),
+        "realized_pnl":     _realized,
         "return_pct":       round(
             (current_nw - BOT_CONFIG["initial_balance"])
             / BOT_CONFIG["initial_balance"] * 100, 4
@@ -330,9 +336,10 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
             break
 
     if not positions:
-        # Identité comptable (0 position ouverte) : PnL réalisé = cash − capital initial
+        _sell_trades = [t for t in perf.get("trade_history", [])
+                        if t.get("side") == "SELL" and t.get("realized_pnl") is not None]
         trader.portfolio.realized_pnl = round(
-            trader.portfolio.balance_usdc - BOT_CONFIG["initial_balance"], 4
+            sum(float(t["realized_pnl"]) for t in _sell_trades), 4
         )
         print(f"  >> Portfolio restaure : 0 position(s), cash=${saved_cash:.2f}, "
               f"PnL=${trader.portfolio.realized_pnl:+.2f}")
@@ -359,12 +366,10 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
         }
         restored += 1
 
-    # Identité comptable : PnL réalisé = cash − capital_initial + coût_positions_ouvertes
-    # Robuste aux SELL exécutés hors cycle (ex : /closeall Telegram) qui ne sont pas
-    # toujours capturés dans trade_history si save_perf n'a pas encore tourné.
-    open_cost = sum(p["total_cost"] for p in trader.portfolio.positions.values())
+    _sell_trades = [t for t in perf.get("trade_history", [])
+                    if t.get("side") == "SELL" and t.get("realized_pnl") is not None]
     trader.portfolio.realized_pnl = round(
-        trader.portfolio.balance_usdc - BOT_CONFIG["initial_balance"] + open_cost, 4
+        sum(float(t["realized_pnl"]) for t in _sell_trades), 4
     )
     print(f"  >> Portfolio restaure : {restored} position(s), cash=${saved_cash:.2f}, "
           f"PnL=${trader.portfolio.realized_pnl:+.2f}")
