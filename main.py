@@ -147,7 +147,9 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
     for tid, p in portfolio.positions.items():
         cost      = p["total_cost"]
         shares    = p["shares"]
-        cur_price = _price_cache.get(tid)          # None si pas encore rafraîchi
+        raw_p     = _price_cache.get(tid)
+        # Filtre [0.02, 0.98] : les prix hors plage sont des prix de payout (marché résolu)
+        cur_price = raw_p if (raw_p is not None and 0.02 <= raw_p <= 0.98) else None
         cur_value = round(shares * cur_price, 4)   if cur_price is not None else None
         unr_pnl   = round(cur_value - cost, 4)     if cur_value is not None else None
         pnl_pct   = round(unr_pnl / cost * 100, 2) if unr_pnl is not None and cost > 0 else None
@@ -363,9 +365,15 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
     if not positions:
         _sell_trades = [t for t in perf.get("trade_history", [])
                         if t.get("side") == "SELL" and t.get("realized_pnl") is not None]
-        trader.portfolio.realized_pnl = round(
-            sum(float(t["realized_pnl"]) for t in _sell_trades), 4
-        )
+        pnl_from_history = round(sum(float(t["realized_pnl"]) for t in _sell_trades), 4)
+        # Sanity check : sans positions ouvertes, open_cost=0 → pnl = cash - initial
+        pnl_accounting = round(saved_cash - BOT_CONFIG["initial_balance"], 4)
+        if abs(pnl_from_history - pnl_accounting) > 2.0:
+            print(f"  [WARN] PnL incohérent (0 pos): trade_history={pnl_from_history:+.2f}$ "
+                  f"vs identité={pnl_accounting:+.2f}$ → correction")
+            trader.portfolio.realized_pnl = pnl_accounting
+        else:
+            trader.portfolio.realized_pnl = pnl_from_history
         print(f"  >> Portfolio restaure : 0 position(s), cash=${saved_cash:.2f}, "
               f"PnL=${trader.portfolio.realized_pnl:+.2f}")
         return
@@ -393,9 +401,20 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
 
     _sell_trades = [t for t in perf.get("trade_history", [])
                     if t.get("side") == "SELL" and t.get("realized_pnl") is not None]
-    trader.portfolio.realized_pnl = round(
-        sum(float(t["realized_pnl"]) for t in _sell_trades), 4
-    )
+    pnl_from_history = round(sum(float(t["realized_pnl"]) for t in _sell_trades), 4)
+
+    # Sanity check : identité comptable → cash = capital_initial - open_cost + realized_pnl
+    open_cost = sum(p["total_cost"] for p in trader.portfolio.positions.values())
+    pnl_accounting = round(saved_cash + open_cost - BOT_CONFIG["initial_balance"], 4)
+    if abs(pnl_from_history - pnl_accounting) > 2.0:
+        print(f"  [WARN] PnL incohérent: trade_history={pnl_from_history:+.2f}$ "
+              f"vs identité comptable={pnl_accounting:+.2f}$ "
+              f"(cash={saved_cash:.2f}, open_cost={open_cost:.2f}, initial={BOT_CONFIG['initial_balance']:.2f})")
+        print(f"  [WARN] Correction automatique : PnL = {pnl_accounting:+.2f}$ (identité comptable)")
+        trader.portfolio.realized_pnl = pnl_accounting
+    else:
+        trader.portfolio.realized_pnl = pnl_from_history
+
     print(f"  >> Portfolio restaure : {restored} position(s), cash=${saved_cash:.2f}, "
           f"PnL=${trader.portfolio.realized_pnl:+.2f}")
 
@@ -469,13 +488,20 @@ def _do_price_refresh(trader: "CopyTrader", perf: dict) -> None:
             del _price_cache[k]
         if stale:
             print(f"  [price_refresh] _price_cache : {len(stale)} entrée(s) obsolète(s) purgée(s)")
-        # Ne stocker que les prix dans [0.02, 0.98] — les prix hors plage (0.0 ou 1.0)
-        # sont des prix de payout (marché résolu) et gonfleraient le Net Worth artificiellement.
-        valid_fetched = {tid: p for tid, p in fetched.items() if 0.02 <= p <= 0.98}
-        skipped = len(fetched) - len(valid_fetched)
+        # Mettre à jour le cache : stocker [0.02, 0.98] et PURGER les hors-plage existants.
+        # Sans purge, un prix reçu à 1.0 (marché résolu) serait ignoré mais l'ancien
+        # prix valide resterait en cache et gonflerait le Net Worth.
+        skipped = 0
+        for tid, price in fetched.items():
+            if 0.02 <= price <= 0.98:
+                _price_cache[tid] = price
+            else:
+                if _price_cache.pop(tid, None) is not None:
+                    skipped += 1
+                else:
+                    skipped += 1
         if skipped:
-            print(f"  [price_refresh] {skipped} prix hors plage [0.02-0.98] ignorés (marchés résolus ?)")
-        _price_cache.update(valid_fetched)
+            print(f"  [price_refresh] {skipped} prix hors plage [0.02-0.98] ignorés/purgés (marchés résolus ?)")
 
         # 2. Mettre à jour immédiatement le dernier cycle dans perf (dashboard temps réel)
         if perf.get("cycles"):
