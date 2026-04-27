@@ -236,11 +236,26 @@ def _run_selection(tracker, perf: dict, tg_send=None,
 
     print(f"\n  [Leaderboard] Evaluation des {len(current)} wallets suivis...")
 
-    # 1. PnL mensuel de chaque wallet suivi (1 appel leaderboard)
-    pnl_map = _get_wallets_pnl(current)
+    # 1. Fetch leaderboard UNE SEULE FOIS (200 entrées couvrent PnL + remplaçants)
+    lb_candidates = _fetch_leaderboard(limit=200)
+    lb_by_addr    = {(e.get("proxyWallet") or "").lower(): e for e in lb_candidates}
 
-    # Persiste le PnL réel Polymarket de chaque wallet → utilisé par le dashboard
-    # (clés en lowercase pour la cohérence avec le reste du code)
+    # Construit pnl_map (float) et meta_map ({pnl, username, rank}) pour tous les wallets suivis
+    pnl_map  = {}
+    meta_map = {}
+    for w in current:
+        wl    = w.lower()
+        entry = lb_by_addr.get(wl, {})
+        pnl   = float(entry.get("pnl", 0) or 0)
+        pnl_map[wl]  = pnl
+        meta_map[wl] = {
+            "address":  w,
+            "pnl":      pnl,
+            "username": entry.get("userName", ""),
+            "rank":     entry.get("rank", "?"),
+        }
+
+    # Persiste le PnL réel Polymarket → utilisé par save_perf pour l'affichage dashboard
     perf.setdefault("meta", {})["wallets_pnl"] = pnl_map
     print(f"  [Leaderboard] PnL Polymarket (mensuel) : "
           + ", ".join(f"{a[:10]}…=${v:,.0f}" for a, v in list(pnl_map.items())[:5]))
@@ -262,18 +277,17 @@ def _run_selection(tracker, perf: dict, tg_send=None,
 
     if not inactive:
         print(f"  [Leaderboard] Tous les wallets actifs — aucun remplacement")
-        _log_selection(perf, [], now, changed=False)
+        _log_selection(perf, [], _build_wallet_list(current, meta_map), now, changed=False)
         return False, 0, len(current)
 
     print(f"  [Leaderboard] {len(inactive)} wallet(s) inactif(s) a remplacer")
 
-    # 3. Cherche des remplacants dans le leaderboard (non deja suivis)
-    keep_set      = {w.lower() for w in current if w not in inactive}
-    candidates    = _fetch_leaderboard(limit=LEADERBOARD_POOL)
-    inactive_q    = list(inactive)
-    replacements  = []   # [{old_wallet, new_wallet, pnl, username, rank, trades_1h}]
+    # 3. Cherche des remplaçants dans lb_candidates (déjà fetchés, pas de second appel)
+    keep_set     = {w.lower() for w in current if w not in inactive}
+    inactive_q   = list(inactive)
+    replacements = []
 
-    for entry in candidates:
+    for entry in lb_candidates:
         if not inactive_q:
             break
         addr     = (entry.get("proxyWallet") or "").lower()
@@ -308,10 +322,10 @@ def _run_selection(tracker, perf: dict, tg_send=None,
 
     if not replacements:
         print("  [Leaderboard] Aucun remplacant eligible trouve — liste inchangee")
-        _log_selection(perf, [], now, changed=False)
+        _log_selection(perf, [], _build_wallet_list(current, meta_map), now, changed=False)
         return False, 0, len(current)
 
-    # 4. Applique les remplacements (preserves l'ordre, remplace en place)
+    # 4. Applique les remplacements (preserve l'ordre, remplace en place)
     replace_map = {r["old_wallet"].lower(): r["new_wallet"] for r in replacements}
     new_wallets = [replace_map.get(w.lower(), w) for w in current]
 
@@ -325,12 +339,22 @@ def _run_selection(tracker, perf: dict, tg_send=None,
     # Synchronise perf["meta"]["wallets"] → persisté par save_perf + lu par le dashboard
     perf.setdefault("meta", {})["wallets"] = new_wallets
 
+    # Met à jour meta_map avec les adresses finales (anciens remplacés → nouveaux)
+    for r in replacements:
+        meta_map.pop(r["old_wallet"].lower(), None)
+        meta_map[r["new_wallet"]] = {
+            "address":  r["new_wallet"],
+            "pnl":      r["pnl"],
+            "username": r["username"],
+            "rank":     r["rank"],
+        }
+
     print(f"\n  [Leaderboard] {len(replacements)} wallet(s) remplace(s) :")
     for r in replacements:
         print(f"    - {r['old_wallet'][:12]}... → #{r['rank']} {r['username']} "
               f"({r['new_wallet'][:12]}...) PnL=${r['pnl']:,.0f}")
 
-    _log_selection(perf, replacements, now, changed=True)
+    _log_selection(perf, replacements, _build_wallet_list(new_wallets, meta_map), now, changed=True)
     n_replaced = len(replacements)
     n_kept     = len(current) - n_replaced
 
@@ -353,34 +377,42 @@ def _run_selection(tracker, perf: dict, tg_send=None,
     return True, n_replaced, n_kept
 
 
-def _log_selection(perf: dict, replacements: list[dict], ts: str,
-                   changed: bool) -> None:
-    """Enregistre le resultat de l'evaluation dans perf["leaderboard_history"] (max 30)."""
+def _build_wallet_list(wallets: list, meta_map: dict) -> list[dict]:
+    """Construit la liste complète des wallets actifs avec métadonnées pour le dashboard.
+    Préserve l'ordre de `wallets`. Utilisé par _log_selection."""
+    result = []
+    for w in wallets:
+        info = meta_map.get(w.lower()) or meta_map.get(w) or {}
+        result.append({
+            "address":  w,
+            "pnl":      info.get("pnl",      0.0),
+            "username": info.get("username", ""),
+            "rank":     info.get("rank",     "?"),
+        })
+    return result
+
+
+def _log_selection(perf: dict, replacements: list[dict], all_wallets: list[dict],
+                   ts: str, changed: bool) -> None:
+    """Enregistre le resultat de l'evaluation dans perf["leaderboard_history"] (max 30).
+    all_wallets contient TOUS les wallets actifs après le scan (pas seulement les remplacés)."""
     history = perf.setdefault("leaderboard_history", [])
-    entry = {"timestamp": ts, "changed": changed, "replacements": []}
+    entry = {
+        "timestamp":    ts,
+        "changed":      changed,
+        "wallets":      all_wallets,   # tous les wallets actifs — source de vérité pour le dashboard
+        "replacements": [],
+        "added":        [],
+        "removed":      [],
+    }
     if changed:
         entry["replacements"] = [
-            {
-                "old": r["old_wallet"],
-                "new": r["new_wallet"],
-                "username": r["username"],
-                "pnl": r["pnl"],
-                "rank": r["rank"],
-            }
+            {"old": r["old_wallet"], "new": r["new_wallet"],
+             "username": r["username"], "pnl": r["pnl"], "rank": r["rank"]}
             for r in replacements
         ]
-        # Champs compatibles avec le dashboard existant
         entry["added"]   = [r["new_wallet"] for r in replacements]
         entry["removed"] = [r["old_wallet"] for r in replacements]
-        entry["wallets"] = [
-            {"address": r["new_wallet"], "username": r["username"],
-             "pnl": r["pnl"], "rank": r["rank"]}
-            for r in replacements
-        ]
-    else:
-        entry["added"] = []
-        entry["removed"] = []
-        entry["wallets"] = []
     history.append(entry)
     if len(history) > 30:
         perf["leaderboard_history"] = history[-30:]
