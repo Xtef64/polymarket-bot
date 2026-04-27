@@ -209,7 +209,7 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
     # Historique cumulatif des trades (capped 500) — alimente le graphique PnL
     trade_history = data.setdefault("trade_history", [])
     existing_ids  = {t.get("order_id") for t in trade_history}
-    for o in (portfolio.order_log[-all_executed:] if all_executed > 0 else []):
+    for o in portfolio.order_log:  # scan complet : capte les ordres async (/closeall Telegram)
         if o.order_id in existing_ids:
             continue
         minfo = market_names.get(o.market_id, {})
@@ -316,23 +316,6 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
     # Restaure les compteurs depuis le summary (toujours présent)
     saved_cash = summary.get("cash_usdc", BOT_CONFIG["initial_balance"])
     trader.portfolio.balance_usdc = saved_cash
-
-    # Recalcule le PnL réalisé depuis trade_history (source de vérité immuable).
-    # N'utilise JAMAIS summary.realized_pnl : il peut s'accumuler de session en session
-    # si un bug (ex: re-traitement de trades, auto-close erroné) a produit des valeurs fausses.
-    trade_history = perf.get("trade_history", [])
-    sell_trades = [
-        t for t in trade_history
-        if t.get("side") == "SELL" and t.get("realized_pnl") is not None
-    ]
-    trader.portfolio.realized_pnl = round(
-        sum(float(t["realized_pnl"]) for t in sell_trades), 4
-    )
-    print(
-        f"  >> PnL realise recalcule depuis trade_history : "
-        f"${trader.portfolio.realized_pnl:+.2f} ({len(sell_trades)} vente(s))"
-    )
-
     trader.portfolio.total_orders_count = summary.get("total_orders", 0)
 
     # Cherche open_positions dans les cycles (du plus récent au plus ancien)
@@ -347,7 +330,12 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
             break
 
     if not positions:
-        print(f"  >> Portfolio restaure : 0 position(s), cash=${saved_cash:.2f}")
+        # Identité comptable (0 position ouverte) : PnL réalisé = cash − capital initial
+        trader.portfolio.realized_pnl = round(
+            trader.portfolio.balance_usdc - BOT_CONFIG["initial_balance"], 4
+        )
+        print(f"  >> Portfolio restaure : 0 position(s), cash=${saved_cash:.2f}, "
+              f"PnL=${trader.portfolio.realized_pnl:+.2f}")
         return
 
     # Limite à max_positions pour éviter l'accumulation entre restarts
@@ -371,7 +359,15 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
         }
         restored += 1
 
-    print(f"  >> Portfolio restaure : {restored} position(s), cash=${saved_cash:.2f}")
+    # Identité comptable : PnL réalisé = cash − capital_initial + coût_positions_ouvertes
+    # Robuste aux SELL exécutés hors cycle (ex : /closeall Telegram) qui ne sont pas
+    # toujours capturés dans trade_history si save_perf n'a pas encore tourné.
+    open_cost = sum(p["total_cost"] for p in trader.portfolio.positions.values())
+    trader.portfolio.realized_pnl = round(
+        trader.portfolio.balance_usdc - BOT_CONFIG["initial_balance"] + open_cost, 4
+    )
+    print(f"  >> Portfolio restaure : {restored} position(s), cash=${saved_cash:.2f}, "
+          f"PnL=${trader.portfolio.realized_pnl:+.2f}")
 
     # Restaure le compteur d'ordres pour éviter les collisions d'ID (SIM-xxxxx) après redémarrage
     from copytrader import SimulatedOrder
