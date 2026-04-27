@@ -241,14 +241,17 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
     ), 4)
 
     # Net worth mark-to-market : utilise _price_cache pour les prix courants.
-    # Sans cache (premiers cycles) : fallback sur avg_cost (= total_cost / shares).
+    # Seuls les prix dans [0.02, 0.98] sont acceptés — les prix hors plage (payout 0.0 ou 1.0
+    # sur marchés résolus) gonflent artificiellement le NW : on tombe sur avg_cost dans ce cas.
     cash_part  = portfolio.balance_usdc
     pos_mtm    = 0.0
     nw_lines   = []
     for tid, p in portfolio.positions.items():
-        cur_price  = _price_cache.get(tid)
-        src_label  = "cache" if cur_price is not None else "avg_cost"
-        price_used = cur_price if cur_price is not None else p["avg_cost"]
+        raw_price  = _price_cache.get(tid)
+        valid_price = raw_price if (raw_price is not None and 0.02 <= raw_price <= 0.98) else None
+        src_label  = "cache" if valid_price is not None else \
+                     ("cache(hors-plage)" if raw_price is not None else "avg_cost")
+        price_used = valid_price if valid_price is not None else p["avg_cost"]
         val        = round(p["shares"] * price_used, 4)
         pos_mtm   += val
         nw_lines.append(
@@ -466,7 +469,13 @@ def _do_price_refresh(trader: "CopyTrader", perf: dict) -> None:
             del _price_cache[k]
         if stale:
             print(f"  [price_refresh] _price_cache : {len(stale)} entrée(s) obsolète(s) purgée(s)")
-        _price_cache.update(fetched)
+        # Ne stocker que les prix dans [0.02, 0.98] — les prix hors plage (0.0 ou 1.0)
+        # sont des prix de payout (marché résolu) et gonfleraient le Net Worth artificiellement.
+        valid_fetched = {tid: p for tid, p in fetched.items() if 0.02 <= p <= 0.98}
+        skipped = len(fetched) - len(valid_fetched)
+        if skipped:
+            print(f"  [price_refresh] {skipped} prix hors plage [0.02-0.98] ignorés (marchés résolus ?)")
+        _price_cache.update(valid_fetched)
 
         # 2. Mettre à jour immédiatement le dernier cycle dans perf (dashboard temps réel)
         if perf.get("cycles"):
@@ -474,8 +483,11 @@ def _do_price_refresh(trader: "CopyTrader", perf: dict) -> None:
             updated = []
             for p in last_cycle.get("open_positions", []):
                 tid      = p.get("token_id", "")
-                # Priorité : prix fraîchement reçu, sinon valeur précédente dans le cache
-                cur_price = fetched.get(tid) or _price_cache.get(tid)
+                # Priorité : prix fraîchement reçu dans la plage valide,
+                # sinon cache, sinon avg_cost.
+                _fp = fetched.get(tid)
+                cur_price = _fp if (_fp is not None and 0.02 <= _fp <= 0.98) \
+                            else _price_cache.get(tid)
                 if cur_price is None:
                     cur_price = p.get("avg_cost", 0.0)
                 shares    = p.get("shares",     0.0)
