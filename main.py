@@ -240,19 +240,42 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         if t.get("side") == "SELL" and t.get("realized_pnl") is not None
     ), 4)
 
+    # Net worth mark-to-market : utilise _price_cache pour les prix courants.
+    # Sans cache (premiers cycles) : fallback sur avg_cost (= total_cost / shares).
+    cash_part  = portfolio.balance_usdc
+    pos_mtm    = 0.0
+    nw_lines   = []
+    for tid, p in portfolio.positions.items():
+        cur_price  = _price_cache.get(tid)
+        src_label  = "cache" if cur_price is not None else "avg_cost"
+        price_used = cur_price if cur_price is not None else p["avg_cost"]
+        val        = round(p["shares"] * price_used, 4)
+        pos_mtm   += val
+        nw_lines.append(
+            f"    {p['outcome']:<6s} {p['shares']:.4f} sh x ${price_used:.4f}"
+            f" [{src_label}] = ${val:.4f}  ({p.get('market_id','')[:14]}…)"
+        )
+    current_nw = round(cash_part + pos_mtm, 4)
+
+    print(f"  [NetWorth] Cash: ${cash_part:.4f}")
+    for ln in nw_lines:
+        print(f"  [NetWorth]{ln}")
+    print(f"  [NetWorth] Total = ${cash_part:.4f} + ${pos_mtm:.4f} = ${current_nw:.4f}"
+          f"  ({len(portfolio.positions)} position(s), {sum(1 for t in _price_cache)} prix en cache)")
+
     cycle_entry = {
         "cycle":          cycle,
         "timestamp":      now,
         "new_trades_detected": new_trades,
         "orders_executed":     executed,
         "portfolio": {
-            "cash_usdc":      round(portfolio.balance_usdc, 4),
-            "net_worth":      portfolio.net_worth(),
+            "cash_usdc":      round(cash_part, 4),
+            "net_worth":      current_nw,
             "realized_pnl":   _realized,
             "open_positions": len(portfolio.positions),
             "total_orders":   portfolio.total_orders_count,
             "return_pct":     round(
-                (portfolio.net_worth() - BOT_CONFIG["initial_balance"])
+                (current_nw - BOT_CONFIG["initial_balance"])
                 / BOT_CONFIG["initial_balance"] * 100, 4
             ),
         },
@@ -275,9 +298,8 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         old_c.pop("top_markets", None)
 
     # Net worth maximum atteint — mis à jour si dépassé, jamais réduit, préservé au reset
-    current_nw  = portfolio.net_worth()
-    saved_max   = data.get("meta", {}).get("net_worth_max", BOT_CONFIG["initial_balance"])
-    new_max     = max(saved_max, current_nw)
+    saved_max = data.get("meta", {}).get("net_worth_max", BOT_CONFIG["initial_balance"])
+    new_max   = max(saved_max, current_nw)
     data.setdefault("meta", {})["net_worth_max"] = round(new_max, 4)
 
     # Résumé global mis à jour
@@ -287,7 +309,7 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         "total_orders":     portfolio.total_orders_count,
         "net_worth":        current_nw,
         "net_worth_max":    round(new_max, 4),
-        "cash_usdc":        round(portfolio.balance_usdc, 4),
+        "cash_usdc":        round(cash_part, 4),
         "realized_pnl":     _realized,
         "return_pct":       round(
             (current_nw - BOT_CONFIG["initial_balance"])
@@ -307,7 +329,7 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, separators=(",", ":"), ensure_ascii=False)
             os.replace(tmp, PERF_FILE)
-        print(f"  >> performance.json mis a jour (cycle #{cycle}, net_worth=${portfolio.net_worth():.2f})")
+        print(f"  >> performance.json mis a jour (cycle #{cycle}, net_worth=${current_nw:.2f})")
     except Exception as e:
         print(f"  [WARN] Impossible d'ecrire performance.json : {e}")
 
