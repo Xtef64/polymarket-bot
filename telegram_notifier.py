@@ -337,6 +337,15 @@ class TelegramCommandHandler:
             total_value += val
         return rows, total_cost, total_value
 
+    def _win_rate_closed(self) -> tuple[float | None, int, int]:
+        """Retourne (win_rate_pct, gagnants, perdants) sur les trades SELL fermés."""
+        sells = [o for o in self._trader.portfolio.order_log if o.side == "SELL"]
+        if not sells:
+            return None, 0, 0
+        winners = sum(1 for o in sells if (getattr(o, "realized_pnl", None) or 0) > 0)
+        losers  = len(sells) - winners
+        return winners / len(sells) * 100, winners, losers
+
     # ── Commandes ─────────────────────────────────────────────────────────────
 
     def _cmd_help(self) -> None:
@@ -363,6 +372,8 @@ class TelegramCommandHandler:
         rows, total_cost, total_value = self._positions_with_pnl()
         unrealized = total_value - total_cost
         unr_pct    = unrealized / total_cost * 100 if total_cost > 0 else 0
+        wr, wr_w, wr_l = self._win_rate_closed()
+        wr_str = f"{wr:.1f}% ({wr_w} gagnants / {wr_l} perdants)" if wr is not None else "N/A (aucun trade fermé)"
         _send(
             f"📊 <b>Status du portfolio</b>\n"
             f"  ⏱ Runtime      : {h}h {m}m {s}s\n"
@@ -371,6 +382,7 @@ class TelegramCommandHandler:
             f"  📈 PnL réalisé  : <b>${p.realized_pnl:+,.2f}</b>\n"
             f"  📉 PnL latent   : <b>${unrealized:+,.2f} ({unr_pct:+.1f}%)</b>\n"
             f"  💼 Net worth    : <b>${p.net_worth():,.2f}</b>\n"
+            f"  🎯 Win rate     : <b>{wr_str}</b>\n"
             f"  🔢 Total ordres : {len(p.order_log)}"
         )
 
@@ -456,14 +468,14 @@ class TelegramCommandHandler:
         p = self._trader.portfolio
         rows, total_cost, total_value = self._positions_with_pnl()
 
-        unrealized     = total_value - total_cost
-        unr_pct        = unrealized / total_cost * 100 if total_cost > 0 else 0
-        realized       = p.realized_pnl
-        total_pnl      = realized + unrealized
-        initial        = total_cost + p.balance_usdc  # approximation
-        winners        = sum(1 for r in rows if r["pnl"] >= 0)
-        losers         = len(rows) - winners
-        win_rate       = winners / len(rows) * 100 if rows else 0
+        unrealized = total_value - total_cost
+        unr_pct    = unrealized / total_cost * 100 if total_cost > 0 else 0
+        realized   = p.realized_pnl
+        total_pnl  = realized + unrealized
+        pos_plus   = sum(1 for r in rows if r["pnl"] >= 0)
+        pos_minus  = len(rows) - pos_plus
+        wr, wr_w, wr_l = self._win_rate_closed()
+        wr_str = f"{wr:.1f}% ({wr_w} gagnants / {wr_l} perdants)" if wr is not None else "N/A (aucun trade fermé)"
 
         _send(
             f"💰 <b>PnL détaillé</b>\n\n"
@@ -473,9 +485,9 @@ class TelegramCommandHandler:
             f"  💵 Cash restant  : ${p.balance_usdc:,.2f} USDC\n"
             f"  📦 Capital investi: ${total_cost:,.2f}\n"
             f"  📊 Valeur mtm    : ${total_value:,.2f}\n\n"
-            f"  🟢 Positions +   : {winners}\n"
-            f"  🔴 Positions −   : {losers}\n"
-            f"  🎯 Win rate latent: {win_rate:.1f}%\n"
+            f"  🟢 Positions +   : {pos_plus}\n"
+            f"  🔴 Positions −   : {pos_minus}\n"
+            f"  🎯 Win rate      : <b>{wr_str}</b>\n"
             f"  🔢 Total ordres  : {len(p.order_log)}"
         )
 

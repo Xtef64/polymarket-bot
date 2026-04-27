@@ -33,10 +33,11 @@
     .g3  { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; margin-bottom:16px; }
     .g4  { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:16px; }
     .g5  { display:grid; grid-template-columns:repeat(5,1fr); gap:16px; margin-bottom:16px; }
+    .g6  { display:grid; grid-template-columns:repeat(6,1fr); gap:16px; margin-bottom:16px; }
     .g62 { display:grid; grid-template-columns:3fr 2fr; gap:16px; margin-bottom:16px; }
     .g64 { display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px; }
-    @media(max-width:1100px){ .g5{grid-template-columns:repeat(3,1fr);} .g62,.g64{grid-template-columns:1fr;} }
-    @media(max-width:750px){ .g4,.g3,.g2{grid-template-columns:1fr;} .g5{grid-template-columns:1fr 1fr;} }
+    @media(max-width:1100px){ .g5{grid-template-columns:repeat(3,1fr);} .g6{grid-template-columns:repeat(3,1fr);} .g62,.g64{grid-template-columns:1fr;} }
+    @media(max-width:750px){ .g4,.g3,.g2{grid-template-columns:1fr;} .g5{grid-template-columns:1fr 1fr;} .g6{grid-template-columns:repeat(2,1fr);} }
 
     .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:16px 18px; }
     .card-title { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.8px; color:var(--muted); margin-bottom:10px; display:flex; align-items:center; justify-content:space-between; }
@@ -123,9 +124,10 @@
 </header>
 
 <!-- ── KPI ── -->
-<div class="g5" id="kpi-row">
+<div class="g6" id="kpi-row">
   <div class="card"><div class="card-title">Net Worth</div><div class="card-value" id="kv-nw">—</div><div class="card-sub" id="ks-ret">—</div></div>
   <div class="card"><div class="card-title">PnL réalisé</div><div class="card-value" id="kv-pnl">—</div><div class="card-sub" id="ks-orders">—</div></div>
+  <div class="card"><div class="card-title">Win Rate</div><div class="card-value" id="kv-wr">—</div><div class="card-sub" id="ks-wr">—</div></div>
   <div class="card"><div class="card-title">Cash dispo</div><div class="card-value" id="kv-cash">—</div><div class="card-sub" id="ks-pos">—</div></div>
   <div class="card"><div class="card-title">Taux de copie</div><div class="card-value" id="kv-copy">—</div><div class="card-sub" id="ks-det">—</div></div>
   <div class="card"><div class="card-title">Cycles / Runtime</div><div class="card-value" id="kv-cycles">—</div><div class="card-sub" id="ks-rt">—</div></div>
@@ -814,6 +816,20 @@ function renderKPIs(d) {
     .reduce((sum, t) => sum + t.realized_pnl, 0);
   document.getElementById('kv-pnl').innerHTML  = `<span class="${clsPct(pnl)}">${fmt$(pnl)}</span>`;
   document.getElementById('ks-orders').textContent = `${summary.total_orders??0} ordres simulés`;
+  // Win rate — trades réalisés fermés uniquement
+  const sellTrades = (d.trade_history || []).filter(t => t.side === 'SELL' && t.realized_pnl != null);
+  const wrWinners  = sellTrades.filter(t => t.realized_pnl > 0).length;
+  const wrLosers   = sellTrades.length - wrWinners;
+  const winRate    = sellTrades.length > 0 ? wrWinners / sellTrades.length * 100 : null;
+  const wrEl  = document.getElementById('kv-wr');
+  const wrSub = document.getElementById('ks-wr');
+  if (winRate !== null) {
+    wrEl.innerHTML      = `<span class="${winRate >= 50 ? 'positive' : 'negative'}">${winRate.toFixed(1)}%</span>`;
+    wrSub.textContent   = `${wrWinners} gagnants / ${wrLosers} perdants`;
+  } else {
+    wrEl.textContent    = '—';
+    wrSub.textContent   = 'aucun trade fermé';
+  }
   document.getElementById('kv-cash').textContent   = fmt$(summary.cash_usdc??initBal);
   document.getElementById('ks-pos').textContent    = `${summary.open_positions??0} / 60 positions`;
   document.getElementById('kv-copy').textContent   = `${copyPct}%`;
