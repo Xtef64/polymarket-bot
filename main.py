@@ -37,10 +37,11 @@ from telegram_notifier     import (
 # Top 3 du leaderboard Polymarket par profit (30j) — limité à 3 pour réduire l'empreinte mémoire
 WALLETS_TO_TRACK = [
     "0xea9b517a08ccf962b85db123b36e775a87d02be5",  # conservé — actif et performant
-    "0xc2e7800b5af46e6093872b177b7a5e7f0563be51",  # #4 beachboy4    — 9 trades/24h, PnL $3.7M
-    "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",  # #7 RN1           — 20 trades/24h, PnL $1.9M
-    "0xee613b3fc183ee44f9da9c05f53e2da107e3debf",  # #9 sovereign2013 — 20 trades/24h, PnL $1.75M
-    "0xb45a797faa52b0fd8adc56d30382022b7b12192c",  # #12 bcda         — 7 trades/24h, PnL $1.3M
+    "0xc2e7800b5af46e6093872b177b7a5e7f0563be51",  # #5  beachboy4         — PnL $3.1M
+    "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",  # #8  RN1               — PnL $2.4M
+    "0xee613b3fc183ee44f9da9c05f53e2da107e3debf",  # #11 sovereign2013     — PnL $1.9M
+    "0xb45a797faa52b0fd8adc56d30382022b7b12192c",  # #17 bcda              — PnL $1.4M
+    "0xead152b855effa6b5b5837f53b24c0756830c76a",  # #10 elkmonkey         — PnL $1.97M, BUY 0.35-0.72, 93 pos actives
     "0xc8049876db52053426dfb71875a879fbe25ec12b",  # ajouté manuellement
     "0xd1042bcea4113d0d831bf2aad893e820bd2bc79c",  # ajouté manuellement
     "0x37ccc65cbae317faafb10802a9da1825fe0cc53a",  # ajouté manuellement
@@ -52,7 +53,8 @@ WALLETS_TO_TRACK = [
 # Wallets explicitement exclus du suivi (mauvaises performances en copie)
 # Le leaderboard_selector ne les sélectionnera jamais non plus.
 EXCLUDED_WALLETS: set[str] = {
-    "0x204f72f35326db932158cba6adff0b9a1da95e14",  # swisstony — PnL copie négatif
+    "0x204f72f35326db932158cba6adff0b9a1da95e14",  # swisstony            — PnL copie négatif
+    "0x507e52ef684ca2dd91f90a9d26d149dd3288beae",  # GamblingIsAllYouNeed — trade marchés résolus (prix 0.00-0.03), pertes certaines en copie
 }
 
 BOT_CONFIG = {
