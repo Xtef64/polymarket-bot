@@ -315,19 +315,21 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
     saved_cash = summary.get("cash_usdc", BOT_CONFIG["initial_balance"])
     trader.portfolio.balance_usdc = saved_cash
 
-    # Restaure le PnL réalisé depuis le summary (valeur cumulée, toujours à jour)
-    # Note : _last_wallet_trades évite désormais les trades re-traités au restart,
-    # donc la valeur du summary reste fiable entre les sessions.
-    trader.portfolio.realized_pnl = summary.get("realized_pnl", 0.0)
-
-    # Garde-fou anti-bug : si le PnL réalisé dépasse 10× le capital initial, c'est aberrant
-    max_pnl = BOT_CONFIG["initial_balance"] * 10
-    if abs(trader.portfolio.realized_pnl) > max_pnl:
-        print(
-            f"  [SANITY] PnL realise aberrant (${trader.portfolio.realized_pnl:.2f}) "
-            f"— depasse 10x le capital (${max_pnl:.0f}) — remis a zero"
-        )
-        trader.portfolio.realized_pnl = 0.0
+    # Recalcule le PnL réalisé depuis trade_history (source de vérité immuable).
+    # N'utilise JAMAIS summary.realized_pnl : il peut s'accumuler de session en session
+    # si un bug (ex: re-traitement de trades, auto-close erroné) a produit des valeurs fausses.
+    trade_history = perf.get("trade_history", [])
+    sell_trades = [
+        t for t in trade_history
+        if t.get("side") == "SELL" and t.get("realized_pnl") is not None
+    ]
+    trader.portfolio.realized_pnl = round(
+        sum(float(t["realized_pnl"]) for t in sell_trades), 4
+    )
+    print(
+        f"  >> PnL realise recalcule depuis trade_history : "
+        f"${trader.portfolio.realized_pnl:+.2f} ({len(sell_trades)} vente(s))"
+    )
 
     trader.portfolio.total_orders_count = summary.get("total_orders", 0)
 
