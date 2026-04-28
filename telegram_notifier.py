@@ -359,7 +359,7 @@ class TelegramCommandHandler:
             f"▶️ <b>Bot en cours d'exécution</b>\n"
             f"  Démarré il y a : {h}h {m}m\n"
             f"  Positions ouvertes : {len(p.positions)}\n"
-            f"  Net worth : <b>${p.net_worth():,.2f}</b>\n"
+            f"  Net worth : <b>${p.net_worth(self._price_cache):,.2f}</b>\n"
             f"  Mode : DRY RUN\n\n"
             + COMMANDS_HELP
         )
@@ -381,7 +381,7 @@ class TelegramCommandHandler:
             f"  📂 Positions    : {len(p.positions)} / 60\n"
             f"  📈 PnL réalisé  : <b>${p.realized_pnl:+,.2f}</b>\n"
             f"  📉 PnL latent   : <b>${unrealized:+,.2f} ({unr_pct:+.1f}%)</b>\n"
-            f"  💼 Net worth    : <b>${p.net_worth():,.2f}</b>\n"
+            f"  💼 Net worth    : <b>${p.net_worth(self._price_cache):,.2f}</b>\n"
             f"  🎯 Win rate     : <b>{wr_str}</b>\n"
             f"  🔢 Total ordres : {len(p.order_log)}"
         )

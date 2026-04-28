@@ -242,31 +242,8 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         if t.get("side") == "SELL" and t.get("realized_pnl") is not None
     ), 4)
 
-    # Net worth mark-to-market : utilise _price_cache pour les prix courants.
-    # Seuls les prix dans [0.02, 0.98] sont acceptés — les prix hors plage (payout 0.0 ou 1.0
-    # sur marchés résolus) gonflent artificiellement le NW : on tombe sur avg_cost dans ce cas.
-    cash_part  = portfolio.balance_usdc
-    pos_mtm    = 0.0
-    nw_lines   = []
-    for tid, p in portfolio.positions.items():
-        raw_price  = _price_cache.get(tid)
-        valid_price = raw_price if (raw_price is not None and 0.02 <= raw_price <= 0.98) else None
-        src_label  = "cache" if valid_price is not None else \
-                     ("cache(hors-plage)" if raw_price is not None else "avg_cost")
-        price_used = valid_price if valid_price is not None else p["avg_cost"]
-        val        = round(p["shares"] * price_used, 4)
-        pos_mtm   += val
-        nw_lines.append(
-            f"    {p['outcome']:<6s} {p['shares']:.4f} sh x ${price_used:.4f}"
-            f" [{src_label}] = ${val:.4f}  ({p.get('market_id','')[:14]}…)"
-        )
-    current_nw = round(cash_part + pos_mtm, 4)
-
-    print(f"  [NetWorth] Cash: ${cash_part:.4f}")
-    for ln in nw_lines:
-        print(f"  [NetWorth]{ln}")
-    print(f"  [NetWorth] Total = ${cash_part:.4f} + ${pos_mtm:.4f} = ${current_nw:.4f}"
-          f"  ({len(portfolio.positions)} position(s), {sum(1 for t in _price_cache)} prix en cache)")
+    # Net worth mark-to-market via portfolio.net_worth() — filtre [0.02, 0.98], fallback avg_cost.
+    current_nw = portfolio.net_worth(_price_cache)
 
     cycle_entry = {
         "cycle":          cycle,
@@ -716,7 +693,7 @@ def run_cycle(
     if tg_handler and executed_orders:
         try:
             notify_cycle(cycle, len(new_trades), len(executed_orders),
-                         trader.portfolio.net_worth())
+                         trader.portfolio.net_worth(_price_cache))
         except Exception:
             pass
 
@@ -895,13 +872,13 @@ def main() -> None:
         tg_handler.stop()
         print("\n\n  Bot arrete.")
         try:
-            trader.portfolio.display()
+            trader.portfolio.display(_price_cache)
         except Exception:
             pass
         print(f"\n  Total ordres simules : {trader.portfolio.total_orders_count}")
         print(f"  Performances sauvegardees dans : {PERF_FILE}")
         try:
-            notify_stop(trader.portfolio.total_orders_count, trader.portfolio.net_worth())
+            notify_stop(trader.portfolio.total_orders_count, trader.portfolio.net_worth(_price_cache))
         except Exception:
             pass
 

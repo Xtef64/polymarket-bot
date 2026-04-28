@@ -137,23 +137,41 @@ class PortfolioSimulator:
         return True
 
     def net_worth(self, current_prices: Optional[dict] = None) -> float:
-        """Calcule la valeur nette du portefeuille (USDC + positions mark-to-market)."""
-        mtm = 0.0
-        if current_prices:
-            for token_id, pos in self.positions.items():
-                price = current_prices.get(token_id, pos["avg_cost"])
-                mtm  += pos["shares"] * price
-        else:
-            for pos in self.positions.values():
-                mtm += pos["total_cost"]  # au prix d'achat
-        return round(self.balance_usdc + mtm, 4)
+        """Calcule la valeur nette (cash + positions mark-to-market).
+        Prix valides : [0.02, 0.98] — hors plage → fallback sur avg_cost.
+        """
+        cash    = self.balance_usdc
+        pos_mtm = 0.0
+        print(f"  [NW] Cash: ${cash:.4f}")
+        for tid, pos in self.positions.items():
+            raw = current_prices.get(tid) if current_prices else None
+            if raw is not None and 0.02 <= raw <= 0.98:
+                price = raw
+                src   = "cache"
+            elif raw is not None:
+                price = pos["avg_cost"]
+                src   = "hors-plage→avg_cost"
+            else:
+                price = pos["avg_cost"]
+                src   = "avg_cost"
+            val      = round(pos["shares"] * price, 4)
+            pos_mtm += val
+            print(
+                f"  [NW]   {pos['outcome']:<6s} {pos['shares']:.4f} sh"
+                f" × ${price:.4f} [{src}] = ${val:.4f}"
+                f"  (mkt {tid[:12]}…)"
+            )
+        total = round(cash + pos_mtm, 4)
+        print(f"  [NW] Total = ${cash:.4f} + ${pos_mtm:.4f} = ${total:.4f}"
+              f"  ({len(self.positions)} pos, {'avec' if current_prices else 'sans'} cache)")
+        return total
 
-    def display(self) -> None:
+    def display(self, current_prices: Optional[dict] = None) -> None:
         print("\n── Portfolio Simulé ──────────────────────────────────────")
         print(f"  Cash      : ${self.balance_usdc:>10.2f} USDC")
         print(f"  Positions : {len(self.positions)}")
         print(f"  PnL réalisé : ${self.realized_pnl:>+.2f}")
-        print(f"  Net worth : ${self.net_worth():>10.2f} USDC")
+        print(f"  Net worth : ${self.net_worth(current_prices):>10.2f} USDC")
         if self.positions:
             print("  ── Positions ouvertes ──")
             for tid, p in self.positions.items():
