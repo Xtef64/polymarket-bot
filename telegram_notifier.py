@@ -132,21 +132,59 @@ def _send(text: str) -> None:
         pass
 
 
+def _delete_webhook() -> None:
+    """Supprime tout webhook actif — obligatoire avant d'utiliser getUpdates (évite 409 Conflict)."""
+    try:
+        r = _tg_session.post(
+            f"{TELEGRAM_API}/bot{BOT_TOKEN}/deleteWebhook",
+            json={"drop_pending_updates": False},
+            timeout=10,
+        )
+        data = r.json()
+        if data.get("result"):
+            print("  [Telegram] Webhook supprimé — mode polling activé")
+        else:
+            print(f"  [Telegram] deleteWebhook: {data.get('description', data)}")
+    except Exception as e:
+        print(f"  [Telegram] Erreur deleteWebhook: {e}")
+
+
+def _verify_token() -> bool:
+    """Appelle getMe pour vérifier que le token est valide. Retourne True si OK."""
+    try:
+        r = _tg_session.get(
+            f"{TELEGRAM_API}/bot{BOT_TOKEN}/getMe",
+            timeout=10,
+        )
+        data = r.json()
+        if data.get("ok"):
+            bot = data["result"]
+            print(f"  [Telegram] Token OK — @{bot.get('username','?')} (id={bot.get('id','?')})")
+            return True
+        print(f"  [Telegram] Token INVALIDE: {data.get('description', data)}")
+        return False
+    except Exception as e:
+        print(f"  [Telegram] Erreur getMe: {e}")
+        return False
+
+
 def _flush_pending_updates() -> int:
     """Vide la queue Telegram des anciens updates (évite de rejouer /stop d'une session précédente).
     Retourne le prochain offset à utiliser."""
     try:
         r = _tg_session.get(
             f"{TELEGRAM_API}/bot{BOT_TOKEN}/getUpdates",
-            params={"offset": -1, "timeout": 0},  # offset=-1 = dernier update seulement
+            params={"offset": -1, "timeout": 0},
             timeout=10,
         )
         if r.status_code == 200:
             results = r.json().get("result", [])
             if results:
                 latest_id = results[-1]["update_id"]
-                print(f"  [Telegram] Flush {latest_id + 1} (skip updates anciens)")
+                print(f"  [Telegram] Flush → offset {latest_id + 1} (anciens updates ignorés)")
                 return latest_id + 1
+        elif r.status_code == 409:
+            print("  [Telegram] 409 Conflict sur flush — webhook encore actif ?")
     except Exception:
         pass
     return 0
@@ -214,15 +252,34 @@ class TelegramCommandHandler:
 
     def start(self) -> None:
         self._running = True
-        # Flush les anciens updates pour éviter de rejouer /stop d'une session précédente
+        # 1. Supprimer tout webhook actif (cause la plus fréquente de 409 / silence total)
+        _delete_webhook()
+        # 2. Vérifier que le token est valide
+        _verify_token()
+        # 3. Flush les anciens updates pour éviter de rejouer /stop d'une session précédente
         self._offset = _flush_pending_updates()
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        # 4. Démarrer le thread avec wrapper de redémarrage automatique
+        self._thread = threading.Thread(
+            target=self._poll_wrapper, daemon=True, name="telegram-poll"
+        )
         self._thread.start()
+        print(f"  [Telegram] Thread démarré (offset={self._offset})")
 
     def stop(self) -> None:
         self._running = False
 
     # ── Boucle de polling ─────────────────────────────────────────────────────
+
+    def _poll_wrapper(self) -> None:
+        """Lance _poll_loop et la redémarre automatiquement si elle crashe."""
+        while self._running and not self._stop_event.is_set():
+            try:
+                self._poll_loop()
+            except Exception as e:
+                if self._running and not self._stop_event.is_set():
+                    print(f"  [Telegram] _poll_loop terminée inopinément ({e}) — redémarrage dans 10s")
+                    time.sleep(10)
+        print("  [Telegram] _poll_wrapper terminée proprement")
 
     def _poll_loop(self) -> None:
         import re
@@ -237,47 +294,63 @@ class TelegramCommandHandler:
             "/ping":      self._cmd_ping,
             "/closeall":  self._cmd_closeall,
         }
-        print("  [Telegram] Poll loop demarre (intervalle 2s, pas de long-polling)")
+        _consecutive_tg_errors = 0
+        print("  [Telegram] Poll loop démarrée (intervalle 2s)")
         while self._running and not self._stop_event.is_set():
             try:
                 r = _tg_session.get(
                     f"{TELEGRAM_API}/bot{BOT_TOKEN}/getUpdates",
-                    params={"offset": self._offset, "timeout": 0},  # pas de long-polling
-                    timeout=5,  # coupe net si pas de réponse en 5s
+                    params={"offset": self._offset, "timeout": 0},
+                    timeout=10,
                 )
                 if r.status_code != 200:
-                    print(f"  [Telegram] getUpdates HTTP {r.status_code}")
+                    body = ""
+                    try:
+                        body = r.json().get("description", r.text[:150])
+                    except Exception:
+                        body = r.text[:150]
                     r.close()
-                    time.sleep(5)
+                    _consecutive_tg_errors += 1
+                    print(f"  [Telegram] getUpdates HTTP {r.status_code}: {body}")
+                    # 409 = conflit webhook → tenter de supprimer à nouveau
+                    if r.status_code == 409:
+                        print("  [Telegram] Conflit webhook détecté — suppression...")
+                        _delete_webhook()
+                    # Backoff exponentiel jusqu'à 60s
+                    wait = min(5 * (2 ** (_consecutive_tg_errors - 1)), 60)
+                    time.sleep(wait)
                     continue
+
                 updates = r.json().get("result", [])
                 r.close()
+                _consecutive_tg_errors = 0  # reset sur succès
+
                 for upd in updates:
                     self._offset = upd["update_id"] + 1
                     msg  = upd.get("message") or upd.get("edited_message") or {}
                     raw  = (msg.get("text") or "").strip()
                     if not raw:
                         continue
-                    # Accepte "/cmd" et "/cmd@botname"
                     cmd = raw.lower().split()[0].split("@")[0]
-                    print(f"  [Telegram] >>> commande : '{cmd}' (update_id={upd['update_id']})")
+                    print(f"  [Telegram] >>> '{cmd}' (update_id={upd['update_id']})")
                     fn = DISPATCH.get(cmd)
                     if fn:
                         self._safe_run(fn)
                     else:
-                        # Commandes dynamiques /close1, /close2, ...
                         m = re.fullmatch(r"/close(\d+)", cmd)
                         if m:
                             n = int(m.group(1))
                             self._safe_run(lambda n=n: self._cmd_close_position(n))
                         else:
-                            print(f"  [Telegram] commande inconnue ignoree : {cmd}")
+                            print(f"  [Telegram] commande inconnue ignorée : {cmd}")
             except requests.exceptions.Timeout:
                 print("  [Telegram] Timeout getUpdates — retry")
             except Exception as e:
+                _consecutive_tg_errors += 1
                 print(f"  [Telegram] Erreur poll : {type(e).__name__}: {e}")
-                time.sleep(5)
-            # Pause fixe de 2s entre chaque poll
+                wait = min(5 * (2 ** (_consecutive_tg_errors - 1)), 60)
+                time.sleep(wait)
+                continue
             time.sleep(2)
 
     def _safe_run(self, fn) -> None:
