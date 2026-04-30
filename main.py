@@ -170,19 +170,19 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
     # Derniers ordres exécutés (tous : copie + stop-loss + auto-close)
     last_orders = [
         {
-            "order_id":         o.order_id,
-            "side":             o.side,
-            "outcome":          o.outcome,
-            "price":            o.price,
-            "size_usdc":        o.size_usdc,
-            "shares":           o.shares,
-            "market_id":        o.market_id,
-            "source":           o.wallet_source[:20] if o.wallet_source else "",
-            "timestamp":        o.timestamp,
-            "entry_price":      getattr(o, "entry_price",      None),
-            "realized_pnl":     getattr(o, "realized_pnl",     None),
-            "realized_pnl_pct": getattr(o, "realized_pnl_pct", None),
-            "duration_sec":     getattr(o, "duration_sec",     None),
+            "order_id":         o.get("order_id", ""),
+            "side":             o.get("side", ""),
+            "outcome":          o.get("outcome", ""),
+            "price":            o.get("price", 0),
+            "size_usdc":        o.get("size_usdc", 0),
+            "shares":           o.get("shares", 0),
+            "market_id":        o.get("market_id", ""),
+            "source":           (o.get("wallet_source") or "")[:20],
+            "timestamp":        o.get("timestamp", ""),
+            "entry_price":      o.get("entry_price"),
+            "realized_pnl":     o.get("realized_pnl"),
+            "realized_pnl_pct": o.get("realized_pnl_pct"),
+            "duration_sec":     o.get("duration_sec"),
         }
         for o in portfolio.order_log[-all_executed:] if all_executed > 0
     ]
@@ -212,35 +212,33 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
     trade_history = data.setdefault("trade_history", [])
     existing_ids  = {t.get("order_id") for t in trade_history}
     for o in portfolio.order_log:  # scan complet : capte les ordres async (/closeall Telegram)
-        if o.order_id in existing_ids:
+        oid = o.get("order_id", "")
+        if oid in existing_ids:
             continue
-        minfo = market_names.get(o.market_id, {})
+        minfo = market_names.get(o.get("market_id", ""), {})
         trade_history.append({
-            "order_id":          o.order_id,
-            "ts":                o.timestamp,
-            "market_id":         o.market_id,  # ID complet (plus de troncature)
+            "order_id":          oid,
+            "ts":                o.get("timestamp", ""),
+            "market_id":         o.get("market_id", ""),
             "market_question":   minfo.get("question", ""),
             "market_slug":       minfo.get("slug", ""),
             "market_group_slug": minfo.get("group_slug", ""),
-            "outcome":           o.outcome,
-            "source":            o.wallet_source[:20] if o.wallet_source else "",
-            "side":              o.side,
-            "price":             o.price,
-            "shares":            round(o.shares, 4),
-            "entry_price":       getattr(o, "entry_price",      None),
-            "realized_pnl":      getattr(o, "realized_pnl",     None),
-            "realized_pnl_pct":  getattr(o, "realized_pnl_pct", None),
-            "duration_sec":      getattr(o, "duration_sec",      None),
+            "outcome":           o.get("outcome", ""),
+            "source":            (o.get("wallet_source") or "")[:20],
+            "side":              o.get("side", ""),
+            "price":             o.get("price", 0),
+            "shares":            round(o.get("shares", 0), 4),
+            "entry_price":       o.get("entry_price"),
+            "realized_pnl":      o.get("realized_pnl"),
+            "realized_pnl_pct":  o.get("realized_pnl_pct"),
+            "duration_sec":      o.get("duration_sec"),
         })
-        existing_ids.add(o.order_id)
+        existing_ids.add(oid)
     if len(trade_history) > 500:
         data["trade_history"] = trade_history[-500:]
 
-    # PnL réalisé = somme des (prix_sortie - prix_entrée) × shares pour chaque SELL
-    _realized = round(sum(
-        float(t["realized_pnl"]) for t in data.get("trade_history", [])
-        if t.get("side") == "SELL" and t.get("realized_pnl") is not None
-    ), 4)
+    # PnL réalisé = somme des trades FERMÉS (source de vérité : portfolio.closed_trades)
+    _realized = portfolio.realized_pnl
 
     # Net worth mark-to-market via portfolio.net_worth() — filtre [0.02, 0.98], fallback avg_cost.
     current_nw = portfolio.net_worth(_price_cache)
@@ -251,7 +249,7 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         "new_trades_detected": new_trades,
         "orders_executed":     executed,
         "portfolio": {
-            "cash_usdc":      round(cash_part, 4),
+            "cash_usdc":      round(portfolio.cash, 4),
             "net_worth":      current_nw,
             "realized_pnl":   _realized,
             "open_positions": len(portfolio.positions),
@@ -291,7 +289,7 @@ def save_perf(data: dict, trader: "CopyTrader", cycle: int,
         "total_orders":     portfolio.total_orders_count,
         "net_worth":        current_nw,
         "net_worth_max":    round(new_max, 4),
-        "cash_usdc":        round(cash_part, 4),
+        "cash_usdc":        round(portfolio.cash, 4),
         "realized_pnl":     _realized,
         "return_pct":       round(
             (current_nw - BOT_CONFIG["initial_balance"])
@@ -340,19 +338,9 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
             break
 
     if not positions:
-        _sell_trades = [t for t in perf.get("trade_history", [])
-                        if t.get("side") == "SELL" and t.get("realized_pnl") is not None]
-        pnl_from_history = round(sum(float(t["realized_pnl"]) for t in _sell_trades), 4)
-        # Sanity check : sans positions ouvertes, open_cost=0 → pnl = cash - initial
-        pnl_accounting = round(saved_cash - BOT_CONFIG["initial_balance"], 4)
-        if abs(pnl_from_history - pnl_accounting) > 2.0:
-            print(f"  [WARN] PnL incohérent (0 pos): trade_history={pnl_from_history:+.2f}$ "
-                  f"vs identité={pnl_accounting:+.2f}$ → correction")
-            trader.portfolio.realized_pnl = pnl_accounting
-        else:
-            trader.portfolio.realized_pnl = pnl_from_history
+        n_closed = trader.portfolio.restore_closed_trades(perf.get("trade_history", []))
         print(f"  >> Portfolio restaure : 0 position(s), cash=${saved_cash:.2f}, "
-              f"PnL=${trader.portfolio.realized_pnl:+.2f}")
+              f"PnL=${trader.portfolio.realized_pnl:+.2f} ({n_closed} trades fermés)")
         return
 
     # Limite à max_positions pour éviter l'accumulation entre restarts
@@ -376,27 +364,11 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
         }
         restored += 1
 
-    _sell_trades = [t for t in perf.get("trade_history", [])
-                    if t.get("side") == "SELL" and t.get("realized_pnl") is not None]
-    pnl_from_history = round(sum(float(t["realized_pnl"]) for t in _sell_trades), 4)
-
-    # Sanity check : identité comptable → cash = capital_initial - open_cost + realized_pnl
-    open_cost = sum(p["total_cost"] for p in trader.portfolio.positions.values())
-    pnl_accounting = round(saved_cash + open_cost - BOT_CONFIG["initial_balance"], 4)
-    if abs(pnl_from_history - pnl_accounting) > 2.0:
-        print(f"  [WARN] PnL incohérent: trade_history={pnl_from_history:+.2f}$ "
-              f"vs identité comptable={pnl_accounting:+.2f}$ "
-              f"(cash={saved_cash:.2f}, open_cost={open_cost:.2f}, initial={BOT_CONFIG['initial_balance']:.2f})")
-        print(f"  [WARN] Correction automatique : PnL = {pnl_accounting:+.2f}$ (identité comptable)")
-        trader.portfolio.realized_pnl = pnl_accounting
-    else:
-        trader.portfolio.realized_pnl = pnl_from_history
-
+    n_closed = trader.portfolio.restore_closed_trades(perf.get("trade_history", []))
     print(f"  >> Portfolio restaure : {restored} position(s), cash=${saved_cash:.2f}, "
-          f"PnL=${trader.portfolio.realized_pnl:+.2f}")
+          f"PnL=${trader.portfolio.realized_pnl:+.2f} ({n_closed} trades fermés)")
 
-    # Restaure le compteur d'ordres pour éviter les collisions d'ID (SIM-xxxxx) après redémarrage
-    from copytrader import SimulatedOrder
+    # Restaure le compteur d'ordres pour éviter les collisions d'ID après redémarrage
     max_counter = 0
     for t in perf.get("trade_history", []):
         oid = t.get("order_id", "")
@@ -408,8 +380,8 @@ def _restore_portfolio(trader: "CopyTrader", perf: dict) -> None:
             except ValueError:
                 pass
     if max_counter > 0:
-        SimulatedOrder._counter = max_counter
-        print(f"  >> Compteur d'ordres restaure : SIM-{max_counter:05d} (evite collisions post-restart)")
+        trader.portfolio.total_orders_count = max_counter
+        print(f"  >> Compteur d'ordres restaure : SIM-{max_counter:05d}")
 
 
 def _do_price_refresh(trader: "CopyTrader", perf: dict) -> None:
@@ -583,8 +555,7 @@ def run_cycle(
             if tg_handler:
                 lines = [f"🛑 Stop-loss : {len(sl_orders)} position(s) fermee(s)"]
                 for o in sl_orders:
-                    avg = trader.portfolio.realized_pnl  # juste pour référence
-                    lines.append(f"  SELL {o.outcome} {o.shares:.1f}sh @ ${o.price:.4f}")
+                    lines.append(f"  SELL {o['outcome']} {o['shares']:.1f}sh @ ${o['price']:.4f}")
                 tg_send("\n".join(lines))
     except Exception as e:
         print(f"  [WARN] auto_stop_loss : {e}")
@@ -595,10 +566,10 @@ def run_cycle(
         if closed_orders:
             print(f"  >> {len(closed_orders)} position(s) fermee(s) automatiquement")
             if tg_handler:
-                freed = sum(o.price * o.shares for o in closed_orders)
+                freed = sum(o["price"] * o["shares"] for o in closed_orders)
                 lines = [f"Auto-close {len(closed_orders)} position(s) perimee(s)"]
                 for o in closed_orders:
-                    lines.append(f"  SELL {o.outcome} {o.shares:.1f}sh @ ${o.price:.3f}")
+                    lines.append(f"  SELL {o['outcome']} {o['shares']:.1f}sh @ ${o['price']:.3f}")
                 lines.append(f"  Cash libere : ${freed:.2f} USDC")
                 tg_send("\n".join(lines))
     except Exception as e:

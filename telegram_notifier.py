@@ -152,18 +152,21 @@ def _flush_pending_updates() -> int:
     return 0
 
 
-def notify_trade(order) -> None:
-    icon        = "🟢" if order.side == "BUY" else "🔴"
-    market_name = _get_market_name(order.market_id)
-    resolution  = _fmt_resolution(order.market_id)
+def notify_trade(order: dict) -> None:
+    side        = order.get("side", "BUY")
+    icon        = "🟢" if side == "BUY" else "🔴"
+    market_id   = order.get("market_id", "")
+    market_name = _get_market_name(market_id)
+    resolution  = _fmt_resolution(market_id)
     resol_line  = f"\n  {resolution}" if resolution else ""
+    src         = (order.get("wallet_source") or "?")[:20]
     _send(
         f"{icon} <b>[DRY RUN] Nouveau trade</b>\n"
-        f"  {order.side} {order.outcome} @ ${order.price:.3f}\n"
-        f"  {order.shares:.2f} shares · ${order.size_usdc:.2f} USDC\n"
+        f"  {side} {order.get('outcome','?')} @ ${order.get('price',0):.3f}\n"
+        f"  {order.get('shares',0):.2f} shares · ${order.get('size_usdc',0):.2f} USDC\n"
         f"  📌 {market_name}{resol_line}\n"
-        f"  Source: <code>{order.wallet_source[:20] if order.wallet_source else '?'}</code>\n"
-        f"  ID: {order.order_id}"
+        f"  Source: <code>{src}</code>\n"
+        f"  ID: {order.get('order_id','?')}"
     )
 
 
@@ -337,14 +340,9 @@ class TelegramCommandHandler:
             total_value += val
         return rows, total_cost, total_value
 
-    def _win_rate_closed(self) -> tuple[float | None, int, int]:
-        """Retourne (win_rate_pct, gagnants, perdants) sur les trades SELL fermés."""
-        sells = [o for o in self._trader.portfolio.order_log if o.side == "SELL"]
-        if not sells:
-            return None, 0, 0
-        winners = sum(1 for o in sells if (getattr(o, "realized_pnl", None) or 0) > 0)
-        losers  = len(sells) - winners
-        return winners / len(sells) * 100, winners, losers
+    def _win_rate_closed(self) -> tuple:
+        """Retourne (win_rate_pct, gagnants, perdants) depuis portfolio.win_rate."""
+        return self._trader.portfolio.win_rate
 
     # ── Commandes ─────────────────────────────────────────────────────────────
 
@@ -377,13 +375,13 @@ class TelegramCommandHandler:
         _send(
             f"📊 <b>Status du portfolio</b>\n"
             f"  ⏱ Runtime      : {h}h {m}m {s}s\n"
-            f"  💵 Cash         : <b>${p.balance_usdc:,.2f}</b> USDC\n"
-            f"  📂 Positions    : {len(p.positions)} / 60\n"
+            f"  💵 Cash         : <b>${p.cash:,.2f}</b> USDC\n"
+            f"  📂 Positions    : {len(p.positions)} / {self._trader.max_positions}\n"
             f"  📈 PnL réalisé  : <b>${p.realized_pnl:+,.2f}</b>\n"
             f"  📉 PnL latent   : <b>${unrealized:+,.2f} ({unr_pct:+.1f}%)</b>\n"
             f"  💼 Net worth    : <b>${p.net_worth(self._price_cache):,.2f}</b>\n"
             f"  🎯 Win rate     : <b>{wr_str}</b>\n"
-            f"  🔢 Total ordres : {len(p.order_log)}"
+            f"  🔢 Total ordres : {p.total_orders_count}"
         )
 
     def _cmd_positions(self) -> None:
@@ -482,45 +480,34 @@ class TelegramCommandHandler:
             f"  ✅ PnL réalisé   : <b>${realized:+,.2f}</b>\n"
             f"  📉 PnL latent    : <b>${unrealized:+,.2f} ({unr_pct:+.1f}%)</b>\n"
             f"  💼 PnL total     : <b>${total_pnl:+,.2f}</b>\n\n"
-            f"  💵 Cash restant  : ${p.balance_usdc:,.2f} USDC\n"
+            f"  💵 Cash restant  : ${p.cash:,.2f} USDC\n"
             f"  📦 Capital investi: ${total_cost:,.2f}\n"
             f"  📊 Valeur mtm    : ${total_value:,.2f}\n\n"
             f"  🟢 Positions +   : {pos_plus}\n"
             f"  🔴 Positions −   : {pos_minus}\n"
             f"  🎯 Win rate      : <b>{wr_str}</b>\n"
-            f"  🔢 Total ordres  : {len(p.order_log)}"
+            f"  🔢 Total ordres  : {p.total_orders_count}"
         )
 
     def _close_position_by_token_id(self, token_id: str) -> None:
         """Ferme une position via SELL au prix midpoint actuel."""
-        from copytrader import SimulatedOrder
         p   = self._trader.portfolio
         pos = p.positions.get(token_id)
         if not pos:
             _send("⚠️ Position introuvable (déjà fermée ?).")
             return
+        mname = _get_market_name(pos.get("market_id", ""), max_len=45)
         price = self._trader._fetch_midpoint(token_id)
         if price is None:
             price = pos["avg_cost"]
-        order = SimulatedOrder(
-            market_id=pos.get("market_id", ""),
-            token_id=token_id,
-            outcome=pos["outcome"],
-            price=price,
-            size_usdc=pos["total_cost"],
-            side="SELL",
-            wallet_source="telegram-close",
-        )
-        order.shares = pos["shares"]
-        success = p.apply_order(order)
-        if success:
-            pnl = (price - pos["avg_cost"]) * order.shares
-            mname = _get_market_name(pos.get("market_id", ""), max_len=45)
+        order = p.close_position(token_id, price, wallet_source="telegram-close")
+        if order:
+            pnl  = order["realized_pnl"]
             icon = "🟢" if pnl >= 0 else "🔴"
             _send(
                 f"{icon} <b>Position fermée</b>\n"
-                f"  {pos['outcome']} — {mname}\n"
-                f"  SELL @ ${price:.3f} | {order.shares:.2f} shares\n"
+                f"  {order['outcome']} — {mname}\n"
+                f"  SELL @ ${price:.3f} | {order['shares']:.2f} shares\n"
                 f"  PnL réalisé : <b>{'+' if pnl>=0 else ''}{pnl:.2f}$</b>"
             )
         else:
