@@ -11,6 +11,51 @@ from datetime import datetime, timezone
 GAMMA_API = "https://gamma-api.polymarket.com"
 HEADERS   = {"Accept": "application/json", "User-Agent": "polymarket-bot/1.0"}
 
+# ── Filtres catégorie ─────────────────────────────────────────────────────────
+
+_EXCLUDE_KW = (
+    # Esports
+    "esport", "dota", "csgo", "cs2", "valorant", "fortnite", "overwatch",
+    "starcraft", "league of legends", "counter-strike", "rocket league",
+    # Tennis
+    "tennis", "wimbledon", "roland garros", "wta", "atp tour", "atp final",
+    "atp singles", "french open", "australian open",
+    # Crypto price direction (price-bet markets, pas régulation)
+    "bitcoin above", "bitcoin below", "bitcoin reach", "bitcoin hit $",
+    "btc above", "btc below", "btc reach",
+    "ethereum above", "ethereum below", "ethereum reach",
+    "eth above", "eth below",
+    "crypto up", "crypto down",
+)
+
+_INCLUDE_KW = (
+    # Politique
+    "election", "president", "presidential", "senate", "congress", "vote",
+    "democrat", "republican", "gop", "trump", "harris", "biden", "kamala",
+    "parliament", "minister", "government", "governor", "mayor", "legislation",
+    "referendum", "impeach", "geopolit", "conflict", "military", "nato",
+    "sanction", "political", "campaign", "ballot", "candidate", "treaty",
+    # Économie
+    "interest rate", "federal reserve", "fed rate", "fomc", "inflation",
+    "gdp", "recession", "unemployment", "jobs report", "nonfarm", "payroll",
+    "cpi", "pce", "central bank", "tariff", "trade war", "trade deal",
+    "debt ceiling", "deficit", "rate hike", "rate cut", "economic",
+    "ecb", "imf", "world bank", "fiscal", "monetary",
+)
+
+
+def is_allowed_market(question: str, slug: str = "", group_slug: str = "") -> bool:
+    """Retourne True si le marché est politique ou économique.
+    Rejette esports, paris crypto-prix et tennis."""
+    text = f"{question} {slug} {group_slug}".lower()
+    for kw in _EXCLUDE_KW:
+        if kw in text:
+            return False
+    for kw in _INCLUDE_KW:
+        if kw in text:
+            return True
+    return False
+
 # Session persistante — réutilise les connexions TCP (réduit trafic + RAM)
 _session = requests.Session()
 _session.headers.update(HEADERS)
@@ -144,6 +189,13 @@ class MarketAnalyzer:
                         continue
                     score = score_market(m)
                     if score < self.min_score:
+                        continue
+                    # Filtre catégorie : politique ou économique uniquement
+                    if not is_allowed_market(
+                        m.get("question", ""),
+                        m.get("slug", ""),
+                        m.get("groupSlug", ""),
+                    ):
                         continue
                     yes_p, no_p = parse_price(m)
                     result.append({

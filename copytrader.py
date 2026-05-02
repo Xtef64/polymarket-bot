@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from portfolio import Portfolio, ENTRY_MIN, ENTRY_MAX
+from market_analyzer import is_allowed_market
 
 # Session persistante — réutilise les connexions TCP
 _session = requests.Session()
@@ -24,7 +25,7 @@ MIN_MARKET_VOLUME       = 1_000
 CLOB_API                = "https://clob.polymarket.com"
 GAMMA_API               = "https://gamma-api.polymarket.com"
 STALE_POSITION_HOURS    = 72
-MAX_RESOLUTION_HOURS    = 720
+MIN_RESOLUTION_HOURS    = 24   # résolution doit être > 24h dans le futur
 
 
 class CopyTrader:
@@ -42,14 +43,14 @@ class CopyTrader:
         self._processed_ids: set[str] = set()
         self._processed_ids_order: deque = deque(maxlen=5_000)
         self._MAX_PROCESSED_IDS = 5_000
-        self._end_date_cache: dict[str, str | None] = {}
+        self._market_meta_cache: dict[str, dict] = {}  # condition_id → {end_date, question, slug, group_slug}
 
     # ── Validation ────────────────────────────────────────────────────────────
 
-    def _fetch_market_end_date(self, condition_id: str) -> Optional[str]:
-        """Récupère la date de résolution d'un marché via l'API Gamma (avec cache)."""
-        if condition_id in self._end_date_cache:
-            return self._end_date_cache[condition_id]
+    def _fetch_market_meta(self, condition_id: str) -> dict:
+        """Récupère question, slug, groupSlug et endDate via l'API Gamma (avec cache)."""
+        if condition_id in self._market_meta_cache:
+            return self._market_meta_cache[condition_id]
         try:
             r = _session.get(
                 f"{GAMMA_API}/markets",
@@ -60,25 +61,29 @@ class CopyTrader:
                 data = r.json()
                 r.close()
                 m0 = data[0] if isinstance(data, list) and data else None
-                end_date = None
                 if m0 and (m0.get("conditionId") or "").lower() == condition_id.lower():
-                    end_date = m0.get("endDate")
-                if end_date is not None:
-                    self._end_date_cache[condition_id] = end_date
-                    if len(self._end_date_cache) > 2_000:
-                        del self._end_date_cache[next(iter(self._end_date_cache))]
-                return end_date
-            r.close()
+                    meta = {
+                        "end_date":   m0.get("endDate"),
+                        "question":   m0.get("question", ""),
+                        "slug":       m0.get("slug", ""),
+                        "group_slug": m0.get("groupSlug", ""),
+                    }
+                    self._market_meta_cache[condition_id] = meta
+                    if len(self._market_meta_cache) > 2_000:
+                        del self._market_meta_cache[next(iter(self._market_meta_cache))]
+                    return meta
+            else:
+                r.close()
         except Exception:
             pass
-        return None
+        return {}
 
     def _is_valid_trade(self, trade: dict, market_info: Optional[dict] = None) -> tuple[bool, str]:
         """Retourne (valide, raison) pour un trade candidat."""
         price = float(trade.get("price", 0) or 0)
         side  = (trade.get("side") or "BUY").upper()
 
-        # Filtre prix uniquement pour BUY (entrée) : 0.10 ≤ prix ≤ 0.90
+        # Prix : 0.60 ≤ prix ≤ 0.90 (haute conviction, marchés politiques/économiques)
         if side == "BUY":
             if not (ENTRY_MIN <= price <= ENTRY_MAX):
                 return False, f"prix entrée hors plage [{ENTRY_MIN},{ENTRY_MAX}] ({price:.3f})"
@@ -94,12 +99,25 @@ class CopyTrader:
             if vol < MIN_MARKET_VOLUME:
                 return False, f"volume trop faible (${vol:,.0f})"
 
-        end_date_str = market_info.get("end_date") if market_info else None
-        if end_date_str is None:
-            condition_id = trade.get("conditionId") or trade.get("market", "")
-            if condition_id:
-                end_date_str = self._fetch_market_end_date(condition_id)
+        # Si market_info absent, on récupère les métadonnées via l'API
+        condition_id = trade.get("conditionId") or trade.get("market", "")
+        if not market_info and condition_id:
+            fetched = self._fetch_market_meta(condition_id)
+            if fetched:
+                market_info = fetched
 
+        # Catégorie : marché politique ou économique obligatoire
+        question   = (market_info.get("question",   "") if market_info else "")
+        slug       = (market_info.get("slug",        "") if market_info else "")
+        group_slug = (market_info.get("group_slug",  "") if market_info else "")
+
+        if not question and not slug:
+            return False, "catégorie marché inconnue (métadonnées absentes)"
+        if not is_allowed_market(question, slug, group_slug):
+            return False, f"marché non politique/économique"
+
+        # Résolution : doit être > MIN_RESOLUTION_HOURS dans le futur
+        end_date_str = market_info.get("end_date") if market_info else None
         if end_date_str is not None:
             try:
                 end_date   = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
@@ -107,8 +125,8 @@ class CopyTrader:
                 hours_left = (end_date - now).total_seconds() / 3600
                 if hours_left < 0:
                     return False, "marché déjà résolu"
-                if hours_left > MAX_RESOLUTION_HOURS:
-                    return False, f"résolution trop loin ({hours_left:.1f}h > {MAX_RESOLUTION_HOURS}h)"
+                if hours_left < MIN_RESOLUTION_HOURS:
+                    return False, f"résolution trop proche ({hours_left:.1f}h < {MIN_RESOLUTION_HOURS}h)"
             except (ValueError, TypeError):
                 pass
 

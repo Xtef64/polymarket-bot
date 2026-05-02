@@ -4,14 +4,14 @@ portfolio.py — Moteur de calcul financier du bot Polymarket
 Règles strictes :
   1. Net Worth   = cash + Σ(shares × min(prix_entrée, prix_actuel))
   2. PnL réalisé = Σ(prix_sortie − prix_entrée) × shares  [trades FERMÉS seulement]
-  3. Filtre BUY  : 0.10 ≤ prix_entrée ≤ 0.90
+  3. Filtre BUY  : 0.60 ≤ prix_entrée ≤ 0.90  (marchés politiques/économiques à haute conviction)
   4. Capital     : $50
 """
 
 from datetime import datetime, timezone
 from typing import Optional
 
-ENTRY_MIN       = 0.10    # prix minimum pour ouvrir une position
+ENTRY_MIN       = 0.60    # prix minimum pour ouvrir une position (conviction élevée)
 ENTRY_MAX       = 0.90    # prix maximum pour ouvrir une position
 PRICE_VALID_MIN = 0.02    # prix actif (en-dessous = marché résolu)
 PRICE_VALID_MAX = 0.98    # prix actif (au-dessus = marché résolu)
